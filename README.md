@@ -59,7 +59,7 @@ configured.
 | `dotsync install [names…] [--all] [--dry-run]` | Link mappings on this machine. No args on a terminal opens the picker; `--all` links everything applicable. A name matches a group (all its members) or a single mapping. |
 | `dotsync uninstall [names…] [--all] [--dry-run]` | Remove dotsync's symlinks here (the cloud copies stay). |
 | `dotsync group <list\|rename\|move\|remove>` | Manage groups. `list` shows groups and their members; `rename <old> <new>` relabels a group (merges if `<new>` exists); `move <path> <group>` reassigns one mapping; `remove <group>` restores its files to `$HOME` (cloud copies kept) and drops the mappings from `dotsync.toml` on **every** machine — asks first (or `--yes`), supports `--dry-run`. |
-| `dotsync doctor [--fix]` | Detect atomic-save clobbers, conflicts, dangling/foreign links, secret-mode drift, and cloud conflict copies; `--fix` repairs the safe ones. |
+| `dotsync doctor [--fix]` | Detect atomic-save clobbers, conflicts, dangling/foreign links, secret-mode drift, cloud conflict copies, and cross-machine drift (orphan symlinks whose mapping was removed elsewhere, partially-linked groups); `--fix` repairs the safe ones, drift is surfaced read-only. |
 
 Global flags: `--json` (machine-readable output on every command) and `--llm`
 (print the full guide for an AI agent).

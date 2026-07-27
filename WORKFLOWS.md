@@ -167,9 +167,13 @@ dotsync doctor --fix    # relink atomic-save clobbers, re-assert secret modes
 
 `doctor` flags: atomic-save clobbers (a real file where a symlink should be),
 true conflicts (local differs from cloud), dangling links (cloud copy not
-downloaded yet), foreign symlinks, secret-mode drift, and cloud "conflicted
-copy" files. `--fix` repairs only the safe cases (relink when content matches;
-chmod secrets back to their mode); genuine conflicts are left for you.
+downloaded yet), foreign symlinks, secret-mode drift, cloud "conflicted copy"
+files, and cross-machine drift — an orphan symlink pointing into the cloud folder
+whose mapping was removed on another machine, or a group you use here that gained
+members you haven't linked. `--fix` repairs only the safe cases (relink when
+content matches; chmod secrets back to their mode); genuine conflicts and drift
+are surfaced read-only for you to resolve (`adopt` an orphan to re-track it,
+`install <group>` to link the newcomers).
 
 ## Removing
 

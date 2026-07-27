@@ -1,8 +1,11 @@
 //! Health checks and safe self-healing. `doctor` surfaces the states that need
 //! attention — atomic-save clobbers, conflicts, dangling/foreign links, secret
-//! mode drift, and cloud "conflicted copy" siblings — and with `fix` repairs the
-//! ones that are safe to repair automatically.
+//! mode drift, cloud "conflicted copy" siblings, and cross-machine drift (orphan
+//! links whose mapping was removed elsewhere, partially-linked groups) — and with
+//! `fix` repairs the ones that are safe to repair automatically. Drift is
+//! surfaced read-only: an advisory, never an automatic mutation.
 
+use std::collections::BTreeMap;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
@@ -165,7 +168,105 @@ pub fn run(cfg: &Config, mappings: &MappingsFile, os: &str, fix: bool) -> Result
         });
     }
 
+    // Drift: a group you use here gained members on another machine. If some of a
+    // group's members are linked and others are only Available, the newcomers
+    // synced in but were never linked here. Read-only advisory.
+    let mut by_group: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
+    for item in &items {
+        if let Some(g) = item.mapping.group.as_deref() {
+            let counts = by_group.entry(g).or_default();
+            match item.state {
+                State::Linked => counts.0 += 1,
+                State::Available => counts.1 += 1,
+                _ => {}
+            }
+        }
+    }
+    for (group, (linked, available)) in by_group {
+        if linked > 0 && available > 0 {
+            report.issues.push(Issue {
+                name: group.to_string(),
+                level: Level::Warn,
+                message: format!(
+                    "group is partially linked here: {available} member(s) available but not linked \
+                     (run `dotsync install {group}` to link them)"
+                ),
+                fixable: false,
+            });
+        }
+    }
+
+    // Drift: orphan symlinks. A `$HOME` symlink pointing into the sync folder for
+    // which no mapping exists — typically left behind when the mapping was
+    // removed on another machine (the removal synced, the symlink didn't).
+    // `plan()` only walks `mappings`, so these are otherwise invisible.
+    let mut orphans = Vec::new();
+    scan_orphans(&cfg.sync_dir, &cfg.sync_dir, cfg, mappings, &mut orphans);
+    for rel in orphans {
+        report.issues.push(Issue {
+            name: rel,
+            level: Level::Warn,
+            message: "symlinked into the cloud folder but no mapping covers it (drift from another \
+                      machine) — `dotsync adopt` it to re-track, or remove the symlink"
+                .into(),
+            fixable: false,
+        });
+    }
+
     Ok(report)
+}
+
+/// Whether a home-relative path is covered by a mapping — the mapping itself, or
+/// an ancestor directory that is mapped as a whole.
+fn covered(rel: &str, mappings: &MappingsFile) -> bool {
+    mappings
+        .mappings
+        .iter()
+        .any(|m| m.name == rel || rel.starts_with(&format!("{}/", m.name)))
+}
+
+/// Walk the cloud tree looking for orphan links: a cloud path whose matching
+/// `$HOME` location is a symlink pointing back at it, with no mapping covering
+/// it. Prunes at mapped roots (their whole subtree is covered) and never
+/// descends through symlinks.
+fn scan_orphans(
+    root: &Path,
+    dir: &Path,
+    cfg: &Config,
+    mappings: &MappingsFile,
+    out: &mut Vec<String>,
+) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        if rel == MappingsFile::FILE_NAME {
+            continue;
+        }
+        // This path is itself a mapping → the whole subtree is covered; skip it.
+        if mappings.mappings.iter().any(|m| m.name == rel) {
+            continue;
+        }
+        let home_path = cfg.home.join(&rel);
+        if crate::fsutil::is_symlink(&home_path)
+            && crate::fsutil::read_link(&home_path).ok().as_deref() == Some(path.as_path())
+            && !covered(&rel, mappings)
+        {
+            out.push(rel);
+            continue; // don't descend into the orphan's own subtree
+        }
+        if entry.file_type().map(|t| t.is_dir()).unwrap_or(false)
+            && !entry.file_type().map(|t| t.is_symlink()).unwrap_or(false)
+        {
+            scan_orphans(root, &path, cfg, mappings, out);
+        }
+    }
 }
 
 /// Recursively collect files whose names look like cloud sync-conflict copies.

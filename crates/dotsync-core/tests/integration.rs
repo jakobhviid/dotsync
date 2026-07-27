@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 use dotsync_core::apply;
 use dotsync_core::config::Config;
+use dotsync_core::doctor;
 use dotsync_core::fsutil;
 use dotsync_core::mapping::{Mapping, MappingsFile};
 use dotsync_core::plan::{state_of, State};
@@ -283,6 +284,59 @@ fn restore_item_on_dangling_symlink_just_unlinks() {
     assert!(out.ok, "unlink failed: {}", out.detail);
     assert!(!fsutil::is_symlink(&target), "dangling symlink must be removed");
     assert!(!fsutil::path_present(&target), "no empty file left behind");
+}
+
+#[test]
+fn doctor_flags_orphan_symlink_drift() {
+    // Adopt a file (creating the symlink + cloud copy), then simulate its mapping
+    // being removed on another machine: the symlink and cloud copy remain, but no
+    // mapping references them. plan() can't see this — doctor's drift scan must.
+    let (_d, cfg) = sandbox();
+    let target = cfg.home.join(".gitconfig");
+    write(&target, "[user]\n");
+    apply::adopt(&cfg, &target, None, None, &[], false).unwrap();
+    assert!(fsutil::is_symlink(&target));
+
+    // Mappings no longer include it (as if `group remove` ran elsewhere).
+    let mappings = MappingsFile::default();
+    let report = doctor::run(&cfg, &mappings, "mac", false).unwrap();
+
+    assert!(
+        report
+            .advisories()
+            .any(|i| i.name == ".gitconfig" && i.message.contains("no mapping covers it")),
+        "orphan symlink drift should be surfaced as an advisory"
+    );
+    // Drift is read-only and non-blocking: it must not make the machine unhealthy.
+    assert!(report.healthy());
+}
+
+#[test]
+fn doctor_advises_partially_linked_group() {
+    // A group with one member linked here and another only available (synced in
+    // but never linked) is drift worth surfacing.
+    let (_d, cfg) = sandbox();
+    let linked = cfg.home.join(".zshrc");
+    write(&linked, "linked");
+    let (ma, _) = apply::adopt(&cfg, &linked, None, Some("shell".into()), &[], false).unwrap();
+
+    let avail = cfg.home.join(".bashrc");
+    write(&avail, "avail");
+    let (mb, _) = apply::adopt(&cfg, &avail, None, Some("shell".into()), &[], false).unwrap();
+    fsutil::remove_symlink(&avail).unwrap(); // cloud copy stays → Available, not linked
+
+    let mut mappings = MappingsFile::default();
+    mappings.upsert(ma);
+    mappings.upsert(mb);
+    assert_eq!(state_of(mappings.find(".bashrc").unwrap(), &cfg, "mac").state, State::Available);
+
+    let report = doctor::run(&cfg, &mappings, "mac", false).unwrap();
+    assert!(
+        report
+            .advisories()
+            .any(|i| i.name == "shell" && i.message.contains("partially linked")),
+        "a partially-linked group should be advised"
+    );
 }
 
 #[test]
