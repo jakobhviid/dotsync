@@ -514,11 +514,20 @@ fn cmd_adopt(
             suggestion.clone()
         }
     };
+    // A group name must not collide with a mapping name — they share the
+    // `install <name>` selector space.
+    mapping::ensure_free_of_mapping(&group, &mappings)?;
+    // Whether we're filing into a group that already exists, so an auto-derived
+    // name can't silently merge unrelated config without the user seeing it.
+    let merging = mappings.groups().contains(&group);
 
     let mut outcomes = Vec::new();
     for path in paths {
         let abs = std::path::absolute(path)
             .with_context(|| format!("could not resolve {}", path.display()))?;
+        // A new mapping's name must not collide with an existing group name.
+        let name = apply::mapping_name_for(&cfg, &abs)?;
+        mapping::ensure_free_of_group(&name, &mappings)?;
         let (m, outcome) = apply::adopt(&cfg, &abs, os_scope, Some(group.clone()), &existing, false)?;
         mappings.upsert(m);
         outcomes.push(outcome);
@@ -529,12 +538,14 @@ fn cmd_adopt(
         let arr: Vec<_> = outcomes.iter().map(outcome_json).collect();
         println!(
             "{}",
-            serde_json::to_string_pretty(&json!({ "group": group, "results": arr }))?
+            serde_json::to_string_pretty(&json!({ "group": group, "merged": merging, "results": arr }))?
         );
     } else {
         report_outcomes(&outcomes, &cfg.home, false);
         if outcomes.iter().any(|o| o.ok) {
-            ui::info(&format!("group: {}", ui::bold(&group)));
+            let note = if merging { ui::dim(" (added to existing group)") } else { String::new() };
+            ui::info(&format!("group: {}{}", ui::bold(&group), note));
+            ui::info(&ui::dim("manage with `dotsync group list/rename/move/remove`"));
         }
     }
     Ok(exit_from(&outcomes))
@@ -552,6 +563,7 @@ fn choose_group(mappings: &MappingsFile, suggestion: &str, rel: &[String]) -> Re
             .with_initial_text(suggestion)
             .interact_text()?;
         mapping::validate_group_name(&name)?;
+        mapping::ensure_free_of_mapping(&name, mappings)?;
         Ok(name.trim().to_string())
     };
 
@@ -656,7 +668,9 @@ fn cmd_group_list(json: bool) -> Result<ExitCode> {
 
 fn cmd_group_rename(old: &str, new: &str, json: bool) -> Result<ExitCode> {
     let (cfg, mut mappings) = load_ctx(json)?;
+    let new = new.trim();
     mapping::validate_group_name(new)?;
+    mapping::ensure_free_of_mapping(new, &mappings)?;
     let count = mappings
         .mappings
         .iter()
@@ -688,18 +702,29 @@ fn cmd_group_rename(old: &str, new: &str, json: bool) -> Result<ExitCode> {
 
 fn cmd_group_move(path: &str, group: &str, json: bool) -> Result<ExitCode> {
     let (cfg, mut mappings) = load_ctx(json)?;
+    let group = group.trim();
     mapping::validate_group_name(group)?;
-    let m = mappings
-        .mappings
-        .iter_mut()
-        .find(|m| m.name == path)
-        .ok_or_else(|| anyhow!("no mapping named {path:?}"))?;
-    m.group = Some(group.to_string());
+    mapping::ensure_free_of_mapping(group, &mappings)?;
+    if mappings.find(path).is_none() {
+        bail!("no mapping named {path:?}");
+    }
+    let creating = !mappings.groups().iter().any(|g| g == group);
+    for m in mappings.mappings.iter_mut() {
+        if m.name == path {
+            m.group = Some(group.to_string());
+        }
+    }
     mappings.save(&cfg.sync_dir.join(MappingsFile::FILE_NAME))?;
     if json {
-        println!("{}", serde_json::to_string_pretty(&json!({ "moved": path, "group": group }))?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({ "moved": path, "group": group, "created": creating }))?
+        );
     } else {
         ui::ok(&format!("moved {path} → group '{group}'"));
+        if creating {
+            ui::info(&format!("created new group '{group}'"));
+        }
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -868,10 +893,12 @@ fn cmd_doctor(fix: bool, json: bool) -> Result<ExitCode> {
     let errors: Vec<_> = report.errors().collect();
     let advisories: Vec<_> = report.advisories().collect();
 
+    // Findings go to stdout (not stderr) alongside their headers, so `doctor`
+    // output is capturable/greppable as a whole — the findings *are* the output.
     if !errors.is_empty() {
         println!("\n  {}", ui::bold("Problems"));
         for issue in &errors {
-            ui::err(&format!("{}  {}", ui::bold(&short(&issue.name)), short(&issue.message)));
+            println!("  {} {}  {}", ui::red("✗"), ui::bold(&short(&issue.name)), short(&issue.message));
         }
     }
     if !advisories.is_empty() {
@@ -882,7 +909,7 @@ fn cmd_doctor(fix: bool, json: bool) -> Result<ExitCode> {
             } else {
                 String::new()
             };
-            ui::warn(&format!("{}  {}{}", ui::bold(&short(&issue.name)), short(&issue.message), hint));
+            println!("  {} {}  {}{}", ui::yellow("⚠"), ui::bold(&short(&issue.name)), short(&issue.message), hint);
         }
     }
 

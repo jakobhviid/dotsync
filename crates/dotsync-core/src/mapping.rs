@@ -228,6 +228,28 @@ pub fn validate_group_name(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// A group name and a mapping name share the `install <name>` selector space, so
+/// they must never collide (the `/`-and-leading-`.` rule alone doesn't stop a
+/// group from shadowing a bare-named mapping like `Brewfile`). Error if `name`
+/// is already used by a mapping.
+pub fn ensure_free_of_mapping(name: &str, mappings: &MappingsFile) -> Result<()> {
+    if mappings.find(name.trim()).is_some() {
+        bail!(
+            "{:?} is already a mapping name — a name is either a group or a mapping, not both",
+            name.trim()
+        );
+    }
+    Ok(())
+}
+
+/// Error if `name` (a would-be mapping name) is already used by a group.
+pub fn ensure_free_of_group(name: &str, mappings: &MappingsFile) -> Result<()> {
+    if mappings.groups().iter().any(|g| g == name) {
+        bail!("{name:?} is already a group name — a name is either a group or a mapping, not both");
+    }
+    Ok(())
+}
+
 /// The deepest shared parent directory of several home-relative paths, if any.
 pub fn common_parent(paths: &[String]) -> Option<String> {
     if paths.is_empty() {

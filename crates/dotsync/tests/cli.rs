@@ -125,6 +125,60 @@ fn group_remove_refuses_without_yes_in_json_mode() {
 }
 
 #[test]
+fn group_name_cannot_shadow_a_mapping() {
+    // A group renamed onto a bare mapping name (Brewfile) must be refused —
+    // otherwise the group shadows the mapping in the `install <name>` selector.
+    let (_d, home, xdg, sync) = configured(&[
+        (".config/zed/settings.json", "zed"),
+        ("Brewfile", "packages"),
+    ]);
+    dotsync(&home, &xdg)
+        .args(["group", "rename", "zed", "Brewfile"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("already a mapping name"));
+    assert_eq!(
+        reload(&sync).find(".config/zed/settings.json").unwrap().group.as_deref(),
+        Some("zed"),
+        "the rename must not have taken effect"
+    );
+}
+
+#[test]
+fn group_move_to_a_new_group_reports_created() {
+    let (_d, home, xdg, _sync) = configured(&[(".config/zed/settings.json", "zed")]);
+    let out = dotsync(&home, &xdg)
+        .args(["group", "move", ".config/zed/settings.json", "editors", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(v["created"], serde_json::json!(true));
+}
+
+#[test]
+fn doctor_prints_advisories_to_stdout() {
+    // A forked dotsync.toml is an advisory; it must land on stdout so `doctor`
+    // output is capturable as a whole (regression guard for the stderr split).
+    let (_d, home, xdg, sync) = configured(&[(".config/zed/settings.json", "zed")]);
+    std::fs::write(sync.join("dotsync-HOST.toml"), "").unwrap();
+    let out = dotsync(&home, &xdg)
+        .arg("doctor")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let s = String::from_utf8_lossy(&out);
+    assert!(
+        s.contains("conflicted copy of dotsync.toml"),
+        "advisory must be on stdout; got: {s}"
+    );
+}
+
+#[test]
 fn group_remove_dry_run_changes_nothing() {
     let (_d, home, xdg, sync) = configured(&[(".config/zed/settings.json", "zed")]);
     dotsync(&home, &xdg)

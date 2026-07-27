@@ -102,8 +102,9 @@ Chain paths when adopting to file them together; pass `--group`, or let dotsync
 derive the name from the path (`~/.config/zed` → `zed`) — on a terminal it offers
 a picker, non-interactively it uses the derived name and echoes it. Group names
 live in their **own namespace**: they can't contain `/` or start with `.` (that's
-the mapping-path namespace), so a group name and a mapping name can never be
-confused when used as a selector.
+the mapping-path namespace), and dotsync additionally forbids a group and a
+mapping from sharing a name — so a selector like `dotsync install <name>` is
+never ambiguous between the two.
 
 ```sh
 dotsync adopt ~/.claude/CLAUDE.md ~/.claude/settings.json --group claude

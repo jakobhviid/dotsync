@@ -132,7 +132,8 @@ Adopting multiple paths at once files them together. Without `--group` on a
 terminal, adopt shows a picker of existing groups plus "New group…";
 non-interactively it derives the name from the path (`~/.config/zed` → `zed`) and
 echoes it in the outcome. Group names are a **disjoint namespace** from mapping
-names — no `/`, no leading `.` — so a selector is never ambiguous. In `status` a
+names — no `/`, no leading `.`, and no group may share a name with a mapping
+(enforced both ways) — so a selector is never ambiguous. In `status` a
 group's members are shown indented under it; in the interactive picker a group is
 one toggle-all row.
 

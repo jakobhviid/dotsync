@@ -359,6 +359,83 @@ fn doctor_flags_a_conflicted_mappings_file() {
 }
 
 #[test]
+fn group_and_mapping_names_cannot_collide() {
+    use dotsync_core::mapping::{ensure_free_of_group, ensure_free_of_mapping};
+    let mut f = MappingsFile::default();
+    let mut m = Mapping::new("Brewfile"); // a bare-named top-level mapping
+    m.group = Some("packages".into());
+    f.upsert(m);
+    // A group name may not equal a mapping name (they share the `install <name>`
+    // selector space) — the `/`-and-leading-`.` rule alone doesn't catch this.
+    assert!(ensure_free_of_mapping("Brewfile", &f).is_err());
+    assert!(ensure_free_of_mapping("claude", &f).is_ok());
+    // A new mapping name may not equal an existing group name.
+    assert!(ensure_free_of_group("packages", &f).is_err());
+    assert!(ensure_free_of_group("Makefile", &f).is_ok());
+}
+
+#[test]
+fn heal_refuses_when_target_changed_since_planning() {
+    // TOCTOU: an item planned as Healable (real file matching cloud) must not be
+    // deleted if it changed again before we act — that would lose unsynced edits.
+    let (_d, cfg) = sandbox();
+    let target = cfg.home.join(".gitconfig");
+    write(&target, "orig");
+    let (mapping, _) = apply::adopt(&cfg, &target, None, None, &[], false).unwrap();
+    fsutil::remove_symlink(&target).unwrap();
+    fs::write(&target, "orig").unwrap(); // matches cloud → Healable
+    let item = state_of(&mapping, &cfg, "mac");
+    assert_eq!(item.state, State::Healable);
+
+    fs::write(&target, "CHANGED after planning").unwrap();
+    let out = apply::link_item(&item, false);
+    assert!(!out.ok, "heal must refuse when content no longer matches the cloud copy");
+    assert_eq!(
+        fs::read_to_string(&target).unwrap(),
+        "CHANGED after planning",
+        "must not delete unsynced content"
+    );
+}
+
+#[test]
+fn unlink_refuses_when_target_became_a_real_file() {
+    // TOCTOU: an item planned as Linked whose symlink an atomic save replaced
+    // with real, unsynced content must not be deleted by unlink.
+    let (_d, cfg) = sandbox();
+    let target = cfg.home.join(".vimrc");
+    write(&target, "set nocompatible");
+    let (mapping, _) = apply::adopt(&cfg, &target, None, None, &[], false).unwrap();
+    let item = state_of(&mapping, &cfg, "mac");
+    assert_eq!(item.state, State::Linked);
+
+    fsutil::remove_symlink(&target).unwrap();
+    fs::write(&target, "unsynced local edit").unwrap();
+    let out = apply::unlink_item(&item, false);
+    assert!(out.ok);
+    assert!(!fsutil::is_symlink(&target));
+    assert_eq!(
+        fs::read_to_string(&target).unwrap(),
+        "unsynced local edit",
+        "must not delete a real file"
+    );
+}
+
+#[test]
+fn dry_run_link_does_not_fail_on_dangling() {
+    // A pure preview must not taint the exit code on a transient state.
+    let (_d, cfg) = sandbox();
+    let target = cfg.home.join(".zshrc");
+    write(&target, "z");
+    let (mapping, _) = apply::adopt(&cfg, &target, None, None, &[], false).unwrap();
+    fsutil::remove_path(&mapping.source(&cfg.sync_dir)).unwrap(); // cloud gone → dangling
+    let item = state_of(&mapping, &cfg, "mac");
+    assert_eq!(item.state, State::DanglingSelf);
+    let out = apply::link_item(&item, true);
+    assert!(out.ok, "a dry-run preview must not fail on a transient dangling state");
+    assert_eq!(out.action, "would-skip");
+}
+
+#[test]
 fn mappings_file_round_trips() {
     let (_d, cfg) = sandbox();
     let path = cfg.sync_dir.join(MappingsFile::FILE_NAME);

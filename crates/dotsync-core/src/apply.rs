@@ -35,6 +35,23 @@ impl Outcome {
 /// Adopt a real path under the home base into the sync folder and symlink it
 /// back. Returns the mapping to record plus the outcome. The caller persists the
 /// mapping into `dotsync.toml`.
+/// The home-relative mapping name a path would adopt as (its mirror-path form,
+/// e.g. `~/.config/zed` → `.config/zed`). Errors if the path isn't under the
+/// home base or is the home base itself.
+pub fn mapping_name_for(cfg: &Config, abs_target: &Path) -> Result<String> {
+    let rel = abs_target.strip_prefix(&cfg.home).map_err(|_| {
+        anyhow!(
+            "{} is not under the home base {} — dotsync can only adopt paths inside it",
+            abs_target.display(),
+            cfg.home.display()
+        )
+    })?;
+    if rel.as_os_str().is_empty() {
+        bail!("refusing to adopt the home base itself");
+    }
+    Ok(rel.to_string_lossy().replace('\\', "/"))
+}
+
 pub fn adopt(
     cfg: &Config,
     abs_target: &Path,
@@ -46,20 +63,10 @@ pub fn adopt(
     if !fsutil::path_present(abs_target) {
         bail!("nothing exists at {}", abs_target.display());
     }
-    let rel = abs_target
-        .strip_prefix(&cfg.home)
-        .map_err(|_| anyhow!(
-            "{} is not under the home base {} — dotsync can only adopt paths inside it",
-            abs_target.display(),
-            cfg.home.display()
-        ))?;
-    if rel.as_os_str().is_empty() {
-        bail!("refusing to adopt the home base itself");
-    }
     if abs_target.starts_with(&cfg.sync_dir) {
         bail!("{} is already inside the sync folder", abs_target.display());
     }
-    let name = rel.to_string_lossy().replace('\\', "/");
+    let name = mapping_name_for(cfg, abs_target)?;
     let source = cfg.sync_dir.join(&name);
 
     // Refuse overlaps: a path that contains, or is contained by, an existing
@@ -174,12 +181,15 @@ pub fn link_item(item: &Item, dry_run: bool) -> Outcome {
             return Outcome::new(&name, "skipped", true, "local only — run `dotsync adopt`")
         }
         State::DanglingSelf => {
+            if dry_run {
+                return Outcome::new(&name, "would-skip", true, "cloud copy missing — nothing to link yet");
+            }
             return Outcome::new(
                 &name,
                 "warn",
                 false,
                 "cloud copy missing — wait for sync, or re-adopt",
-            )
+            );
         }
         State::Available => {
             done!("link", true, "");
@@ -187,18 +197,32 @@ pub fn link_item(item: &Item, dry_run: bool) -> Outcome {
         }
         State::Healable => {
             done!("relink", true, "content matches cloud");
+            // Re-check right before deleting the real file: if an atomic save
+            // changed it since planning it no longer matches the cloud copy, so
+            // treat it as a conflict rather than destroying unsynced content.
+            if !fsutil::files_equal(&target, source) {
+                return Outcome::new(
+                    &name,
+                    "conflict",
+                    false,
+                    "changed since planning — no longer matches the cloud copy; resolve by hand",
+                );
+            }
             fsutil::remove_path(&target)
                 .and_then(|_| fsutil::make_symlink(source, &target))
                 .map(|_| ("relinked", "healed atomic-save clobber".to_string()))
         }
         State::Diverged => match item.mapping.on_conflict {
             OnConflict::Fail => {
+                if dry_run {
+                    return Outcome::new(&name, "would-skip", true, "conflict — resolve, or set on_conflict = \"adopt\"");
+                }
                 return Outcome::new(
                     &name,
                     "conflict",
                     false,
                     "local differs from cloud — resolve, or set on_conflict = \"adopt\"",
-                )
+                );
             }
             OnConflict::Adopt => {
                 done!("adopt", true, "back up local, link cloud");
@@ -210,12 +234,15 @@ pub fn link_item(item: &Item, dry_run: bool) -> Outcome {
         },
         State::ForeignSymlink(dest) => match item.mapping.on_conflict {
             OnConflict::Fail => {
+                if dry_run {
+                    return Outcome::new(&name, "would-skip", true, format!("foreign symlink to {} — resolve by hand", dest.display()));
+                }
                 return Outcome::new(
                     &name,
                     "conflict",
                     false,
                     format!("target is a symlink to {} — resolve by hand", dest.display()),
-                )
+                );
             }
             OnConflict::Adopt => {
                 done!("adopt", true, "replace foreign symlink");
@@ -249,6 +276,16 @@ pub fn unlink_item(item: &Item, dry_run: bool) -> Outcome {
             };
             if dry_run {
                 return Outcome::new(&name, "would-unlink", true, "");
+            }
+            // Re-check we're still removing a symlink, not a real file an atomic
+            // save dropped here since planning — never delete unsynced content.
+            if !fsutil::is_symlink(&target) {
+                return Outcome::new(
+                    &name,
+                    "skipped",
+                    true,
+                    "no longer a symlink (changed since planning) — re-run to re-check",
+                );
             }
             match fsutil::remove_symlink(&target) {
                 Ok(_) => Outcome::new(&name, "unlinked", true, ""),
