@@ -37,8 +37,19 @@ pub struct Report {
 }
 
 impl Report {
+    /// Healthy = no *error-level* problems. Warn-level advisories are surfaced
+    /// to the human but don't make a machine "unhealthy" (they're often
+    /// transient, e.g. a cloud copy not downloaded yet).
     pub fn healthy(&self) -> bool {
-        self.issues.is_empty()
+        !self.issues.iter().any(|i| i.level == Level::Error)
+    }
+
+    pub fn errors(&self) -> impl Iterator<Item = &Issue> {
+        self.issues.iter().filter(|i| i.level == Level::Error)
+    }
+
+    pub fn advisories(&self) -> impl Iterator<Item = &Issue> {
+        self.issues.iter().filter(|i| i.level == Level::Warn)
     }
 }
 

@@ -4,6 +4,8 @@
 //! linked item removes it. The filesystem (the symlinks) is the source of truth,
 //! so the picker simply reconciles to your selection.
 
+use std::path::Path;
+
 use anyhow::Result;
 use dialoguer::{theme::ColorfulTheme, MultiSelect};
 
@@ -19,8 +21,8 @@ fn actionable(items: &[Item]) -> Vec<&Item> {
         .collect()
 }
 
-fn row_label(item: &Item) -> String {
-    let (lab, note) = overview::label(item);
+fn row_label(item: &Item, home: &Path) -> String {
+    let (lab, note) = overview::label(item, home);
     let secret = if item.is_secret() { "  secret" } else { "" };
     if note.is_empty() {
         format!("{:<28}  {}{}", item.name(), lab, secret)
@@ -31,7 +33,7 @@ fn row_label(item: &Item) -> String {
 
 /// Run the picker over `items`, returning the outcomes of what was applied.
 /// Falls back with a clear message if there is nothing to choose.
-pub fn run(items: &[Item]) -> Result<Vec<Outcome>> {
+pub fn run(items: &[Item], home: &Path) -> Result<Vec<Outcome>> {
     let choices = actionable(items);
     if choices.is_empty() {
         println!("Nothing to pick — no mappings apply on this machine yet.");
@@ -39,7 +41,7 @@ pub fn run(items: &[Item]) -> Result<Vec<Outcome>> {
         return Ok(Vec::new());
     }
 
-    let labels: Vec<String> = choices.iter().map(|i| row_label(i)).collect();
+    let labels: Vec<String> = choices.iter().map(|i| row_label(i, home)).collect();
     let defaults: Vec<bool> = choices.iter().map(|i| i.state == State::Linked).collect();
 
     let selection = MultiSelect::with_theme(&ColorfulTheme::default())

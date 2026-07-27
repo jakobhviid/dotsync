@@ -203,8 +203,8 @@ fn cmd_default(json: bool) -> Result<ExitCode> {
         return render_status(&items, &cfg, json);
     }
     overview::render(&items, &cfg);
-    let outcomes = picker::run(&items)?;
-    report_outcomes(&outcomes, false);
+    let outcomes = picker::run(&items, &cfg.home)?;
+    report_outcomes(&outcomes, &cfg.home, false);
     doctor_hint(&cfg, &mappings);
     Ok(exit_from(&outcomes))
 }
@@ -445,7 +445,7 @@ fn cmd_adopt(path: &Path, mac: bool, linux: bool, json: bool) -> Result<ExitCode
     if json {
         println!("{}", serde_json::to_string_pretty(&outcome_json(&outcome))?);
     } else {
-        report_outcomes(std::slice::from_ref(&outcome), false);
+        report_outcomes(std::slice::from_ref(&outcome), &cfg.home, false);
     }
     Ok(exit_from(std::slice::from_ref(&outcome)))
 }
@@ -479,8 +479,8 @@ fn cmd_install(names: &[String], all: bool, dry_run: bool, json: bool) -> Result
     let use_picker = names.is_empty() && !all && !json && !dry_run && interactive();
     if use_picker {
         overview::render(&items, &cfg);
-        let outcomes = picker::run(&items)?;
-        report_outcomes(&outcomes, false);
+        let outcomes = picker::run(&items, &cfg.home)?;
+        report_outcomes(&outcomes, &cfg.home, false);
         doctor_hint(&cfg, &mappings);
         return Ok(exit_from(&outcomes));
     }
@@ -490,7 +490,7 @@ fn cmd_install(names: &[String], all: bool, dry_run: bool, json: bool) -> Result
         bail!("nothing selected — pass mapping names, --all, or run interactively");
     }
     let outcomes: Vec<Outcome> = selected.iter().map(|i| apply::link_item(i, dry_run)).collect();
-    report_outcomes(&outcomes, json);
+    report_outcomes(&outcomes, &cfg.home, json);
     if !json {
         doctor_hint(&cfg, &mappings);
     }
@@ -512,7 +512,7 @@ fn cmd_uninstall(names: &[String], all: bool, dry_run: bool, json: bool) -> Resu
         .iter()
         .map(|i| apply::unlink_item(i, dry_run))
         .collect();
-    report_outcomes(&outcomes, json);
+    report_outcomes(&outcomes, &cfg.home, json);
     Ok(exit_from(&outcomes))
 }
 
@@ -545,24 +545,49 @@ fn cmd_doctor(fix: bool, json: bool) -> Result<ExitCode> {
         return Ok(if report.healthy() { ExitCode::SUCCESS } else { ExitCode::FAILURE });
     }
 
+    let home_str = cfg.home.to_string_lossy().into_owned();
+    let short = |s: &str| s.replace(&home_str, "~");
+
     for out in &report.fixed {
-        ui::ok(&format!("{} — {} {}", out.name, out.action, out.detail));
+        ui::ok(&format!("fixed {}  {} {}", ui::bold(&out.name), out.action, short(&out.detail)));
     }
-    if report.issues.is_empty() {
-        ui::ok("no problems found");
-    } else {
-        for issue in &report.issues {
-            let line = format!(
-                "{} — {}{}",
-                issue.name,
-                issue.message,
-                if issue.fixable && !fix { "  (run `dotsync doctor --fix`)" } else { "" }
-            );
-            match issue.level {
-                doctor::Level::Warn => ui::warn(&line),
-                doctor::Level::Error => ui::err(&line),
-            }
+
+    let errors: Vec<_> = report.errors().collect();
+    let advisories: Vec<_> = report.advisories().collect();
+
+    if !errors.is_empty() {
+        println!("\n  {}", ui::bold("Problems"));
+        for issue in &errors {
+            ui::err(&format!("{}  {}", ui::bold(&short(&issue.name)), short(&issue.message)));
         }
+    }
+    if !advisories.is_empty() {
+        println!("\n  {}", ui::bold("Advisories"));
+        for issue in &advisories {
+            let hint = if issue.fixable && !fix {
+                ui::dim("  (dotsync doctor --fix)")
+            } else {
+                String::new()
+            };
+            ui::warn(&format!("{}  {}{}", ui::bold(&short(&issue.name)), short(&issue.message), hint));
+        }
+    }
+
+    println!();
+    if errors.is_empty() && advisories.is_empty() && report.fixed.is_empty() {
+        ui::ok("everything looks healthy");
+    } else {
+        let mut parts = Vec::new();
+        if !errors.is_empty() {
+            parts.push(ui::red(&format!("{} problem{}", errors.len(), plural(errors.len()))));
+        }
+        if !advisories.is_empty() {
+            parts.push(ui::yellow(&format!("{} advisor{}", advisories.len(), if advisories.len() == 1 { "y" } else { "ies" })));
+        }
+        if !report.fixed.is_empty() {
+            parts.push(ui::green(&format!("{} fixed", report.fixed.len())));
+        }
+        println!("  {}", parts.join(&ui::dim(" · ")));
     }
     Ok(if report.healthy() { ExitCode::SUCCESS } else { ExitCode::FAILURE })
 }
@@ -575,7 +600,7 @@ fn doctor_hint(cfg: &Config, mappings: &MappingsFile) {
     }
 }
 
-fn report_outcomes(outcomes: &[Outcome], json: bool) {
+fn report_outcomes(outcomes: &[Outcome], home: &Path, json: bool) {
     if json {
         let arr: Vec<_> = outcomes.iter().map(outcome_json).collect();
         println!("{}", serde_json::to_string_pretty(&json!({ "results": arr })).unwrap_or_default());
@@ -585,18 +610,31 @@ fn report_outcomes(outcomes: &[Outcome], json: bool) {
         println!("{}", ui::dim("nothing to do"));
         return;
     }
+    let home_str = home.to_string_lossy().into_owned();
     for out in outcomes {
-        let detail = if out.detail.is_empty() {
+        // Collapse long absolute home paths in the detail for readability.
+        let detail = out.detail.replace(&home_str, "~");
+        let detail = if detail.is_empty() {
             String::new()
         } else {
-            format!(" — {}", out.detail)
+            format!(" — {}", ui::dim(&detail))
         };
-        let line = format!("{}  {}{}", out.name, out.action, detail);
+        let line = format!("{}  {}{}", ui::bold(&out.name), out.action, detail);
         if out.ok {
             ui::ok(&line);
         } else {
             ui::err(&line);
         }
+    }
+    // Summary when more than one thing happened.
+    if outcomes.len() > 1 {
+        let ok = outcomes.iter().filter(|o| o.ok).count();
+        let failed = outcomes.len() - ok;
+        let mut parts = vec![ui::green(&format!("{ok} ok"))];
+        if failed > 0 {
+            parts.push(ui::red(&format!("{failed} failed")));
+        }
+        println!("  {}", parts.join(&ui::dim(" · ")));
     }
 }
 
@@ -607,6 +645,14 @@ fn outcome_json(out: &Outcome) -> serde_json::Value {
         "ok": out.ok,
         "detail": out.detail,
     })
+}
+
+fn plural(n: usize) -> &'static str {
+    if n == 1 {
+        ""
+    } else {
+        "s"
+    }
 }
 
 fn exit_from(outcomes: &[Outcome]) -> ExitCode {
