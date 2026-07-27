@@ -70,7 +70,6 @@ enum Cmd {
     /// Show every mapping and its state on this machine.
     Status,
     /// Move existing $HOME paths into the cloud folder and symlink them back.
-    #[command(visible_alias = "add")]
     Adopt {
         /// Files or directories to adopt (resolved against the current dir).
         #[arg(required = true)]

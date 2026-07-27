@@ -55,7 +55,7 @@ configured.
 | `dotsync setup [dir]` | Provision this machine and install completions. Usually unnecessary — the first run of any command offers this automatically. With no `dir`, auto-discovers a `dotsync` folder across common cloud providers (or type your own path). |
 | `dotsync config` | Show the resolved sync folder, home base, and config path. |
 | `dotsync` / `dotsync status` | Show the overview: every mapping and its state on this machine. Bare `dotsync` opens the interactive picker on a terminal. |
-| `dotsync adopt <paths…> [--group <name>] [--mac\|--linux]` | Move existing `$HOME` files/dirs into the cloud folder and symlink them back (aliased `dotsync add`). Chain several paths to adopt them together; `--group` (or an interactive picker) files them under one group. `--mac`/`--linux` scopes to one OS. |
+| `dotsync adopt <paths…> [--group <name>] [--mac\|--linux]` | Move existing `$HOME` files/dirs into the cloud folder and symlink them back. Chain several paths to adopt them together; `--group` (or an interactive picker) files them under one group. `--mac`/`--linux` scopes to one OS. |
 | `dotsync install [names…] [--all] [--dry-run]` | Link mappings on this machine. No args on a terminal opens the picker; `--all` links everything applicable. |
 | `dotsync uninstall [names…] [--all] [--dry-run]` | Remove dotsync's symlinks here (the cloud copies stay). |
 | `dotsync doctor [--fix]` | Detect atomic-save clobbers, conflicts, dangling/foreign links, secret-mode drift, and cloud conflict copies; `--fix` repairs the safe ones. |
@@ -100,8 +100,8 @@ Related mappings can share a **group** label so you manage them as a unit. Chain
 paths when adopting, or pick a group interactively:
 
 ```sh
-dotsync add ~/.claude/CLAUDE.md ~/.claude/settings.json --group claude
-dotsync add ~/.claude/keybindings.json            # picker offers "claude", "New group…", etc.
+dotsync adopt ~/.claude/CLAUDE.md ~/.claude/settings.json --group claude
+dotsync adopt ~/.claude/keybindings.json          # picker offers "claude", "New group…", etc.
 dotsync install claude                            # a group name works as a selector
 ```
 

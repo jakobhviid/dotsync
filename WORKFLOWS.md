@@ -62,8 +62,8 @@ Other machines pick it up as "available" and can link it via the picker or
 Manage several mappings as a unit with a group label:
 
 ```sh
-dotsync add ~/.claude/CLAUDE.md ~/.claude/settings.json --group claude
-dotsync add ~/.claude/keybindings.json     # no --group on a terminal → group picker
+dotsync adopt ~/.claude/CLAUDE.md ~/.claude/settings.json --group claude
+dotsync adopt ~/.claude/keybindings.json   # no --group on a terminal → group picker
 dotsync install claude                     # group name is a selector
 dotsync uninstall claude
 ```
