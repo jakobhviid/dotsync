@@ -60,6 +60,9 @@ pub struct Mapping {
     /// Conflict behavior. Absent = `fail`.
     #[serde(default, skip_serializing_if = "is_default_conflict")]
     pub on_conflict: OnConflict,
+    /// Optional group label, so several mappings can be managed as a unit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
 }
 
 impl Mapping {
@@ -72,6 +75,7 @@ impl Mapping {
             target_linux: None,
             mode: None,
             on_conflict: OnConflict::Fail,
+            group: None,
         }
     }
 
@@ -187,6 +191,14 @@ impl MappingsFile {
 
     pub fn find(&self, name: &str) -> Option<&Mapping> {
         self.mappings.iter().find(|m| m.name == name)
+    }
+
+    /// Distinct group labels, sorted.
+    pub fn groups(&self) -> Vec<String> {
+        let mut g: Vec<String> = self.mappings.iter().filter_map(|m| m.group.clone()).collect();
+        g.sort();
+        g.dedup();
+        g
     }
 
     /// Insert or replace a mapping by name.

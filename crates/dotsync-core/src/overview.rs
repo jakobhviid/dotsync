@@ -109,29 +109,62 @@ pub fn render(items: &[Item], cfg: &Config) {
     println!();
 
     let name_w = items.iter().map(|i| i.name().len()).max().unwrap_or(4).max(4);
+
+    // Group rows (in first-seen order) render under a header with members
+    // indented; ungrouped rows render normally.
+    let mut group_order: Vec<String> = Vec::new();
     for item in items {
-        let (lab, note) = label(item, &cfg.home);
-        let secret = if item.is_secret() {
-            ui::dim(&format!(" secret {}", item.mapping.mode.as_deref().unwrap_or("")))
-        } else {
-            String::new()
-        };
-        let note = if note.is_empty() {
-            String::new()
-        } else {
-            format!("  {}", ui::dim(&note))
-        };
+        if let Some(g) = &item.mapping.group {
+            if !group_order.contains(g) {
+                group_order.push(g.clone());
+            }
+        }
+    }
+    for g in &group_order {
+        let members: Vec<&Item> = items
+            .iter()
+            .filter(|i| i.mapping.group.as_deref() == Some(g.as_str()))
+            .collect();
+        let linked = members.iter().filter(|i| i.state.is_linked()).count();
         println!(
-            "  {} {:<name_w$}  {}{}{}",
-            symbol(&item.state),
-            item.name(),
-            colorize(&item.state, &lab),
-            secret,
-            note,
-            name_w = name_w,
+            "  {}  {}",
+            ui::bold(g),
+            ui::dim(&format!("group · {}/{} linked", linked, members.len()))
         );
+        for item in members {
+            print_row(item, &cfg.home, name_w, 4);
+        }
+    }
+    for item in items.iter().filter(|i| i.mapping.group.is_none()) {
+        print_row(item, &cfg.home, name_w, 0);
     }
     println!();
+}
+
+/// Print one mapping row, optionally indented (for group members).
+fn print_row(item: &Item, home: &Path, name_w: usize, indent: usize) {
+    let (lab, note) = label(item, home);
+    let secret = if item.is_secret() {
+        ui::dim(&format!(" secret {}", item.mapping.mode.as_deref().unwrap_or("")))
+    } else {
+        String::new()
+    };
+    let note = if note.is_empty() {
+        String::new()
+    } else {
+        format!("  {}", ui::dim(&note))
+    };
+    println!(
+        "  {:indent$}{} {:<name_w$}  {}{}{}",
+        "",
+        symbol(&item.state),
+        item.name(),
+        colorize(&item.state, &lab),
+        secret,
+        note,
+        indent = indent,
+        name_w = name_w,
+    );
 }
 
 /// Build the JSON payload for `--json`.

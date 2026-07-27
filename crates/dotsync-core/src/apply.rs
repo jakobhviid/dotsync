@@ -39,6 +39,7 @@ pub fn adopt(
     cfg: &Config,
     abs_target: &Path,
     os_scope: Option<&str>,
+    group: Option<String>,
     dry_run: bool,
 ) -> Result<(Mapping, Outcome)> {
     if !fsutil::path_present(abs_target) {
@@ -71,10 +72,18 @@ pub fn adopt(
 
     let mut mapping = Mapping::new(name.clone());
     mapping.mode = mode.clone();
+    mapping.group = group;
     match os_scope {
         Some("mac") => mapping.target_mac = Some(format!("~/{name}")),
         Some("linux") => mapping.target_linux = Some(format!("~/{name}")),
         _ => {}
+    }
+
+    // Already adopted here (symlink already points at the sync copy): don't touch
+    // the filesystem — just carry the (possibly new) group/mode into the mapping.
+    if fsutil::is_symlink(abs_target) && fsutil::read_link(abs_target).ok().as_deref() == Some(source.as_path()) {
+        let action = if mapping.group.is_some() { "grouped" } else { "already-adopted" };
+        return Ok((mapping, Outcome::new(&name, action, true, "")));
     }
 
     // If the cloud copy already exists, this path was adopted from another

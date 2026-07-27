@@ -36,7 +36,7 @@ fn adopt_moves_into_cloud_and_links_back() {
     // Adopt the containing dir.
     let dir = cfg.home.join(".config/zed");
 
-    let (mapping, out) = apply::adopt(&cfg, &dir, None, false).unwrap();
+    let (mapping, out) = apply::adopt(&cfg, &dir, None, None, false).unwrap();
     assert!(out.ok);
     assert_eq!(mapping.name, ".config/zed");
 
@@ -58,7 +58,7 @@ fn secret_paths_are_auto_moded() {
     let (_d, cfg) = sandbox();
     let target = cfg.home.join(".ssh/config");
     write(&target, "Host x");
-    let (mapping, _) = apply::adopt(&cfg, &target, None, false).unwrap();
+    let (mapping, _) = apply::adopt(&cfg, &target, None, None, false).unwrap();
     assert_eq!(mapping.mode.as_deref(), Some("0600"));
     let mode = fsutil::mode_of(&cfg.sync_dir.join(".ssh/config")).unwrap();
     assert_eq!(mode, 0o600);
@@ -69,7 +69,7 @@ fn atomic_save_clobber_is_healable_and_heals() {
     let (_d, cfg) = sandbox();
     let target = cfg.home.join(".gitconfig");
     write(&target, "[user]\n");
-    let (mapping, _) = apply::adopt(&cfg, &target, None, false).unwrap();
+    let (mapping, _) = apply::adopt(&cfg, &target, None, None, false).unwrap();
 
     // Simulate an atomic save: replace the symlink with a real, identical file.
     let source = mapping.source(&cfg.sync_dir);
@@ -89,7 +89,7 @@ fn real_divergence_is_a_conflict_and_fail_policy_refuses() {
     let (_d, cfg) = sandbox();
     let target = cfg.home.join(".gitconfig");
     write(&target, "original");
-    let (mapping, _) = apply::adopt(&cfg, &target, None, false).unwrap();
+    let (mapping, _) = apply::adopt(&cfg, &target, None, None, false).unwrap();
 
     // Diverge: local file now differs from the cloud copy.
     fsutil::remove_symlink(&target).unwrap();
@@ -122,6 +122,20 @@ fn per_os_targets_scope_correctly() {
 
     let plain = Mapping::new(".config/zed");
     assert!(plain.applies_to("mac") && plain.applies_to("linux"));
+}
+
+#[test]
+fn adopt_with_group_tags_and_lists() {
+    let (_d, cfg) = sandbox();
+    let mut file = MappingsFile::default();
+    for name in [".claude/CLAUDE.md", ".claude/settings.json"] {
+        let target = cfg.home.join(name);
+        write(&target, "x");
+        let (m, _) = apply::adopt(&cfg, &target, None, Some("claude".into()), false).unwrap();
+        assert_eq!(m.group.as_deref(), Some("claude"));
+        file.upsert(m);
+    }
+    assert_eq!(file.groups(), vec!["claude".to_string()]);
 }
 
 #[test]

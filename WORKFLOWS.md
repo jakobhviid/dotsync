@@ -57,6 +57,22 @@ relative to the home base, moves it into the cloud folder, and symlinks it back.
 Other machines pick it up as "available" and can link it via the picker or
 `install`.
 
+## Grouping related config
+
+Manage several mappings as a unit with a group label:
+
+```sh
+dotsync add ~/.claude/CLAUDE.md ~/.claude/settings.json --group claude
+dotsync add ~/.claude/keybindings.json     # no --group on a terminal → group picker
+dotsync install claude                     # group name is a selector
+dotsync uninstall claude
+```
+
+Adopting multiple paths at once files them together. Without `--group` on a
+terminal, adopt shows a picker of existing groups plus "New group…". In `status`
+a group's members are shown indented under it; in the interactive picker a group
+is one toggle-all row.
+
 ## Different paths per OS
 
 When the same content lives at different paths on mac and linux, give both:

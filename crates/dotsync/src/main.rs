@@ -69,14 +69,19 @@ enum Cmd {
     Config,
     /// Show every mapping and its state on this machine.
     Status,
-    /// Move an existing $HOME path into the cloud folder and symlink it back.
+    /// Move existing $HOME paths into the cloud folder and symlink them back.
+    #[command(visible_alias = "add")]
     Adopt {
-        /// The file or directory to adopt (resolved against the current dir).
-        path: PathBuf,
-        /// Scope the mapping to macOS only.
+        /// Files or directories to adopt (resolved against the current dir).
+        #[arg(required = true)]
+        paths: Vec<PathBuf>,
+        /// Put the adopted paths in this group. Omit to pick one interactively.
+        #[arg(long)]
+        group: Option<String>,
+        /// Scope the mappings to macOS only.
         #[arg(long, conflicts_with = "linux")]
         mac: bool,
-        /// Scope the mapping to Linux only.
+        /// Scope the mappings to Linux only.
         #[arg(long)]
         linux: bool,
     },
@@ -154,7 +159,12 @@ fn run(cli: &Cli) -> Result<ExitCode> {
             provision(dir.clone(), home.clone(), *shell, cli.json).map(|_| ExitCode::SUCCESS)
         }
         Some(Cmd::Config) => cmd_config(cli.json),
-        Some(Cmd::Adopt { path, mac, linux }) => cmd_adopt(path, *mac, *linux, cli.json),
+        Some(Cmd::Adopt {
+            paths,
+            group,
+            mac,
+            linux,
+        }) => cmd_adopt(paths, group.clone(), *mac, *linux, cli.json),
         Some(Cmd::Status) => cmd_status(cli.json),
         Some(Cmd::Install {
             names,
@@ -424,11 +434,14 @@ fn install_completions(shell: Option<Shell>) -> Option<String> {
     Some(note)
 }
 
-fn cmd_adopt(path: &Path, mac: bool, linux: bool, json: bool) -> Result<ExitCode> {
+fn cmd_adopt(
+    paths: &[PathBuf],
+    group: Option<String>,
+    mac: bool,
+    linux: bool,
+    json: bool,
+) -> Result<ExitCode> {
     let cfg = ensure_config(json)?;
-    // Absolute path relative to cwd, without resolving symlinks.
-    let abs = std::path::absolute(path)
-        .with_context(|| format!("could not resolve {}", path.display()))?;
     // Canonicalize the home base so strip_prefix is reliable.
     let home = std::fs::canonicalize(&cfg.home).unwrap_or_else(|_| cfg.home.clone());
     let cfg = Config { home, ..cfg };
@@ -443,27 +456,70 @@ fn cmd_adopt(path: &Path, mac: bool, linux: bool, json: bool) -> Result<ExitCode
 
     let mappings_path = cfg.sync_dir.join(MappingsFile::FILE_NAME);
     let mut mappings = MappingsFile::load(&mappings_path)?;
-    let (mapping, outcome) = apply::adopt(&cfg, &abs, os_scope, false)?;
-    mappings.upsert(mapping);
+
+    // Resolve the group: explicit flag, else an interactive pick on a terminal.
+    let group = match group {
+        Some(g) => Some(g),
+        None if !json && interactive() => choose_group(&mappings)?,
+        None => None,
+    };
+
+    let mut outcomes = Vec::new();
+    for path in paths {
+        let abs = std::path::absolute(path)
+            .with_context(|| format!("could not resolve {}", path.display()))?;
+        let (mapping, outcome) = apply::adopt(&cfg, &abs, os_scope, group.clone(), false)?;
+        mappings.upsert(mapping);
+        outcomes.push(outcome);
+    }
     mappings.save(&mappings_path)?;
 
-    if json {
-        println!("{}", serde_json::to_string_pretty(&outcome_json(&outcome))?);
+    report_outcomes(&outcomes, &cfg.home, json);
+    Ok(exit_from(&outcomes))
+}
+
+/// Interactive group picker used by `adopt` when no `--group` was given.
+fn choose_group(mappings: &MappingsFile) -> Result<Option<String>> {
+    let groups = mappings.groups();
+    let mut items = vec!["(no group)".to_string()];
+    items.extend(groups.iter().cloned());
+    items.push("+ New group…".to_string());
+
+    let idx = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("Add to a group?")
+        .items(&items)
+        .default(0)
+        .interact()?;
+
+    if idx == 0 {
+        Ok(None)
+    } else if idx == items.len() - 1 {
+        let name: String = Input::with_theme(&ColorfulTheme::default())
+            .with_prompt("New group name")
+            .interact_text()?;
+        let name = name.trim().to_string();
+        Ok(if name.is_empty() { None } else { Some(name) })
     } else {
-        report_outcomes(std::slice::from_ref(&outcome), &cfg.home, false);
+        Ok(Some(groups[idx - 1].clone()))
     }
-    Ok(exit_from(std::slice::from_ref(&outcome)))
 }
 
 fn select_items<'a>(items: &'a [Item], names: &[String], all: bool) -> Result<Vec<&'a Item>> {
     if !names.is_empty() {
         let mut chosen = Vec::new();
         for n in names {
-            let item = items
+            // A name matches either a group (expand to all members) or one mapping.
+            let members: Vec<&Item> = items
                 .iter()
-                .find(|i| i.name() == n)
-                .ok_or_else(|| anyhow!("no mapping named {n:?}"))?;
-            chosen.push(item);
+                .filter(|i| i.mapping.group.as_deref() == Some(n.as_str()))
+                .collect();
+            if !members.is_empty() {
+                chosen.extend(members);
+            } else if let Some(item) = items.iter().find(|i| i.name() == n) {
+                chosen.push(item);
+            } else {
+                return Err(anyhow!("no mapping or group named {n:?}"));
+            }
         }
         Ok(chosen)
     } else if all {
