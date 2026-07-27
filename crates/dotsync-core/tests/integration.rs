@@ -125,6 +125,38 @@ fn per_os_targets_scope_correctly() {
 }
 
 #[test]
+fn adopt_refuses_path_already_inside_sync() {
+    let (_d, cfg) = sandbox();
+    // Adopt ~/.config as a dir → it becomes a symlink into the cloud.
+    write(&cfg.home.join(".config/a.conf"), "a");
+    apply::adopt(&cfg, &cfg.home.join(".config"), None, None, false).unwrap();
+
+    // A file now created "in" ~/.config actually lives in the cloud (via the
+    // symlink). Adopting it must be refused, not delete the cloud master.
+    let inner = cfg.home.join(".config/foo.conf");
+    fs::write(&inner, "precious").unwrap();
+    let res = apply::adopt(&cfg, &inner, None, None, false);
+    assert!(res.is_err(), "adopting a path inside the sync folder must be refused");
+    assert_eq!(fs::read_to_string(&inner).unwrap(), "precious", "must not be destroyed");
+}
+
+#[test]
+fn whole_secret_dir_is_tagged_and_moded_recursively() {
+    let (_d, cfg) = sandbox();
+    // The natural case: adopt the whole ~/.aws directory (no trailing slash).
+    write(&cfg.home.join(".aws/credentials"), "key");
+    let (m, _) = apply::adopt(&cfg, &cfg.home.join(".aws"), None, None, false).unwrap();
+    assert_eq!(m.mode.as_deref(), Some("0700"), "whole secret dir must be tagged");
+
+    // Perms are enforced recursively: dir 0700, inner file 0600.
+    assert_eq!(fsutil::mode_of(&cfg.sync_dir.join(".aws")).unwrap(), 0o700);
+    assert_eq!(
+        fsutil::mode_of(&cfg.sync_dir.join(".aws/credentials")).unwrap(),
+        0o600
+    );
+}
+
+#[test]
 fn adopt_with_group_tags_and_lists() {
     let (_d, cfg) = sandbox();
     let mut file = MappingsFile::default();

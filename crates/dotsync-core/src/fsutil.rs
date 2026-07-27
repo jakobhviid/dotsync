@@ -54,6 +54,8 @@ pub fn remove_path(path: &Path) -> Result<()> {
 
 /// Move `src` to `dst`, falling back to copy+remove across filesystems (the
 /// common case here: `$HOME` and the cloud folder are often different volumes).
+/// The cross-device path copies to a temp sibling and renames into place, so a
+/// crash never leaves a half-written file at the final `dst`.
 pub fn move_path(src: &Path, dst: &Path) -> Result<()> {
     if let Some(parent) = dst.parent() {
         fs::create_dir_all(parent)
@@ -62,12 +64,25 @@ pub fn move_path(src: &Path, dst: &Path) -> Result<()> {
     if fs::rename(src, dst).is_ok() {
         return Ok(());
     }
-    copy_recursive(src, dst)?;
+    let tmp = temp_sibling(dst);
+    let _ = remove_path(&tmp); // clear any stale temp
+    copy_recursive(src, &tmp)?;
+    fs::rename(&tmp, dst)
+        .with_context(|| format!("could not finalize move to {}", dst.display()))?;
     remove_path(src)?;
     Ok(())
 }
 
-/// Recursively copy a file, directory, or symlink, preserving symlinks.
+/// A temp path next to `path` (same directory, so a rename into place is atomic).
+pub fn temp_sibling(path: &Path) -> PathBuf {
+    let mut s = path.as_os_str().to_os_string();
+    s.push(".dotsync-tmp");
+    PathBuf::from(s)
+}
+
+/// Recursively copy a file, directory, or symlink, preserving symlinks and the
+/// source's permission bits (so a secret dir isn't silently widened to 0755 on
+/// a cross-device copy).
 pub fn copy_recursive(src: &Path, dst: &Path) -> Result<()> {
     let meta = fs::symlink_metadata(src)
         .with_context(|| format!("could not stat {}", src.display()))?;
@@ -79,6 +94,7 @@ pub fn copy_recursive(src: &Path, dst: &Path) -> Result<()> {
     } else if ft.is_dir() {
         fs::create_dir_all(dst)
             .with_context(|| format!("could not create {}", dst.display()))?;
+        fs::set_permissions(dst, meta.permissions()).ok(); // mirror source mode
         for entry in fs::read_dir(src)? {
             let entry = entry?;
             copy_recursive(&entry.path(), &dst.join(entry.file_name()))?;
@@ -135,29 +151,84 @@ pub fn set_mode(path: &Path, mode: u32) -> Result<()> {
         .with_context(|| format!("could not chmod {} to {:o}", path.display(), mode))
 }
 
+/// Home-relative path prefixes (whole segments) that hold secrets.
+const SECRET_DIRS: &[&str] = &[
+    ".ssh",
+    ".gnupg",
+    ".aws",
+    ".kube",
+    ".docker",
+    ".password-store",
+    ".config/gh",
+    ".config/gcloud",
+    ".config/op",
+    ".config/rclone",
+];
+
 /// Heuristic: does this home-relative path look like it holds secrets? Used to
-/// auto-tag a restrictive mode at adopt time.
-pub fn looks_secret(name: &str) -> Option<u32> {
+/// auto-tag a restrictive mode at adopt time. Matches whole path segments (so
+/// adopting the directory `~/.aws` itself is caught, not just `~/.aws/...`).
+/// Best-effort only — the user can always set `mode`/`secret` explicitly.
+pub fn looks_secret(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
-    let dir_secret = n.starts_with(".ssh/")
-        || n == ".ssh"
-        || n.starts_with(".gnupg")
-        || n.starts_with(".aws/")
-        || n.starts_with(".config/gh/")
-        || n.starts_with(".config/gcloud/")
+    let base = n.rsplit('/').next().unwrap_or(&n);
+
+    let dir_secret = SECRET_DIRS
+        .iter()
+        .any(|d| n == *d || n.starts_with(&format!("{d}/")));
+
+    let file_secret = base.ends_with(".pem")
+        || base.ends_with(".key")
+        || base.starts_with(".env")
+        || base.contains("id_rsa")
+        || base.contains("id_ed25519")
+        || matches!(
+            base,
+            ".netrc" | ".npmrc" | ".pgpass" | ".authinfo" | ".git-credentials"
+                | ".terraformrc" | ".msmtprc" | "credentials"
+        )
         || n.contains("credential")
         || n.contains("secret");
-    let file_secret = n.ends_with(".pem")
-        || n.ends_with(".key")
-        || n.ends_with("id_rsa")
-        || n.ends_with("id_ed25519")
-        || n.ends_with(".npmrc")
-        || n.ends_with(".netrc");
-    if dir_secret || file_secret {
-        // Directories need execute/search (0700); lone files 0600. Caller may
-        // refine, but default by whether the name ends in a slash-ish dir hint.
-        Some(0o600)
+
+    dir_secret || file_secret
+}
+
+/// Recursively enforce secret permissions on the sync copy: `0700` on
+/// directories, `0600` on files. Symlinks inside the tree are left untouched
+/// (we never chmod through a link to something outside the sync set).
+pub fn enforce_secret_tree(path: &Path) -> Result<()> {
+    let meta = fs::symlink_metadata(path)
+        .with_context(|| format!("could not stat {}", path.display()))?;
+    if meta.file_type().is_symlink() {
+        return Ok(());
+    }
+    if meta.is_dir() {
+        set_mode(path, 0o700)?;
+        for entry in fs::read_dir(path)? {
+            enforce_secret_tree(&entry?.path())?;
+        }
     } else {
-        None
+        set_mode(path, 0o600)?;
+    }
+    Ok(())
+}
+
+/// True if any (non-symlink) file or directory in the tree is group/world
+/// accessible — i.e. a secret whose mode has drifted open.
+pub fn any_too_open(path: &Path) -> bool {
+    match fs::symlink_metadata(path) {
+        Ok(m) if m.file_type().is_symlink() => false,
+        Ok(m) => {
+            if mode_of(path).map(|md| md & 0o077 != 0).unwrap_or(false) {
+                return true;
+            }
+            if m.is_dir() {
+                if let Ok(rd) = fs::read_dir(path) {
+                    return rd.flatten().any(|e| any_too_open(&e.path()));
+                }
+            }
+            false
+        }
+        Err(_) => false,
     }
 }

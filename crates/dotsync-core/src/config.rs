@@ -102,21 +102,30 @@ pub fn save(cfg: &Config) -> Result<()> {
     Ok(())
 }
 
+/// The nearest ancestor of `path` that is a git working tree (contains `.git`),
+/// if any. Used to keep synced content — especially secrets — out of git.
+pub fn enclosing_git_tree(path: &Path) -> Option<PathBuf> {
+    let mut dir = Some(path);
+    while let Some(d) = dir {
+        if d.join(".git").exists() {
+            return Some(d.to_path_buf());
+        }
+        dir = d.parent();
+    }
+    None
+}
+
 /// Guardrail: refuse a sync dir that sits inside a git working tree, so synced
 /// content (including secrets) can never be committed to a repo by accident.
 pub fn ensure_not_in_git(sync_dir: &Path) -> Result<()> {
-    let mut dir = Some(sync_dir);
-    while let Some(d) = dir {
-        if d.join(".git").exists() {
-            return Err(anyhow!(
-                "sync dir {} is inside a git repository ({}) — dotsync refuses this so \
-                 synced files (and secrets) can never be committed. Point it at a plain \
-                 cloud folder instead.",
-                sync_dir.display(),
-                d.display()
-            ));
-        }
-        dir = d.parent();
+    if let Some(repo) = enclosing_git_tree(sync_dir) {
+        return Err(anyhow!(
+            "sync dir {} is inside a git repository ({}) — dotsync refuses this so \
+             synced files (and secrets) can never be committed. Point it at a plain \
+             cloud folder instead.",
+            sync_dir.display(),
+            repo.display()
+        ));
     }
     Ok(())
 }

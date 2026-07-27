@@ -93,28 +93,49 @@ pub fn run(cfg: &Config, mappings: &MappingsFile, os: &str, fix: bool) -> Result
             _ => {}
         }
 
-        // Secret mode drift (independent of the link state).
+        // Secret perms: recursive open-mode drift, plus the target must never
+        // sit inside a git working tree (git would commit the secret).
         if item.mapping.mode.is_some() {
             if fix {
                 if let Some(out) = apply::enforce_mode(cfg, item, false) {
                     report.fixed.push(out);
                 }
-            } else if let Some(bits) = item.mapping.mode_bits() {
-                if let Some(cur) = crate::fsutil::mode_of(&item.source) {
-                    if cur != bits {
-                        report.issues.push(Issue {
-                            name: item.name().to_string(),
-                            level: Level::Warn,
-                            message: format!(
-                                "secret mode drifted to {:04o}, should be {:04o} (fixable: chmod)",
-                                cur, bits
-                            ),
-                            fixable: true,
-                        });
-                    }
+            } else if crate::fsutil::any_too_open(&item.source) {
+                report.issues.push(Issue {
+                    name: item.name().to_string(),
+                    level: Level::Warn,
+                    message: "secret perms are group/world-accessible somewhere in the tree (fixable: chmod to 0700/0600)".into(),
+                    fixable: true,
+                });
+            }
+            if let Some(target) = &item.target {
+                if let Some(repo) = crate::config::enclosing_git_tree(target) {
+                    report.issues.push(Issue {
+                        name: item.name().to_string(),
+                        level: Level::Error,
+                        message: format!(
+                            "secret's target is inside a git repository ({}) — git could commit it; move it out of the repo",
+                            repo.display()
+                        ),
+                        fixable: false,
+                    });
                 }
             }
         }
+    }
+
+    // The sync folder must never be inside a git tree (it can be created/nested
+    // after `init`, so re-check here, not just at setup).
+    if let Some(repo) = crate::config::enclosing_git_tree(&cfg.sync_dir) {
+        report.issues.push(Issue {
+            name: cfg.sync_dir.display().to_string(),
+            level: Level::Error,
+            message: format!(
+                "sync folder is inside a git repository ({}) — synced files and secrets could be committed",
+                repo.display()
+            ),
+            fixable: false,
+        });
     }
 
     // World/group-accessible sync folder = weak protection for any secrets in it.

@@ -62,13 +62,11 @@ pub fn adopt(
     let source = cfg.sync_dir.join(&name);
 
     // Auto-tag a restrictive mode for known-secret paths (dirs 0700, files 0600).
-    let mode = fsutil::looks_secret(&name).map(|_| {
-        if abs_target.is_dir() {
-            "0700".to_string()
-        } else {
-            "0600".to_string()
-        }
-    });
+    let mode = if fsutil::looks_secret(&name) {
+        Some(if abs_target.is_dir() { "0700" } else { "0600" }.to_string())
+    } else {
+        None
+    };
 
     let mut mapping = Mapping::new(name.clone());
     mapping.mode = mode.clone();
@@ -84,6 +82,21 @@ pub fn adopt(
     if fsutil::is_symlink(abs_target) && fsutil::read_link(abs_target).ok().as_deref() == Some(source.as_path()) {
         let action = if mapping.group.is_some() { "grouped" } else { "already-adopted" };
         return Ok((mapping, Outcome::new(&name, action, true, "")));
+    }
+
+    // Refuse a path that already resolves *inside* the sync folder — e.g. a path
+    // under an ancestor already symlinked into the cloud. Adopting it would
+    // compare the cloud master against itself and could delete it.
+    if let Ok(canon) = std::fs::canonicalize(abs_target) {
+        let canon_sync =
+            std::fs::canonicalize(&cfg.sync_dir).unwrap_or_else(|_| cfg.sync_dir.clone());
+        if canon.starts_with(&canon_sync) {
+            bail!(
+                "{} already resolves inside the sync folder (it's under something already \
+                 synced) — nothing to adopt; use `dotsync install` to link it here",
+                abs_target.display()
+            );
+        }
     }
 
     // If the cloud copy already exists, this path was adopted from another
@@ -114,8 +127,8 @@ pub fn adopt(
         ));
     }
     fsutil::move_path(abs_target, &source)?;
-    if let Some(bits) = mapping.mode_bits() {
-        fsutil::set_mode(&source, bits)?;
+    if mapping.mode.is_some() {
+        fsutil::enforce_secret_tree(&source)?;
     }
     fsutil::make_symlink(&source, abs_target)?;
     Ok((mapping, Outcome::new(&name, "adopted", true, format!("→ {}", source.display()))))
@@ -201,11 +214,9 @@ pub fn link_item(item: &Item, dry_run: bool) -> Outcome {
 
     match result {
         Ok((action, detail)) => {
-            // Enforce a secret mode on the freshly linked source.
-            if let Some(bits) = item.mapping.mode_bits() {
-                if fsutil::set_mode(source, bits).is_err() {
-                    return Outcome::new(&name, action, true, format!("{detail} (mode not set)"));
-                }
+            // Enforce secret perms on the freshly linked source (recursively).
+            if item.mapping.mode.is_some() && fsutil::enforce_secret_tree(source).is_err() {
+                return Outcome::new(&name, action, true, format!("{detail} (mode not set)"));
             }
             Outcome::new(&name, action, true, detail)
         }
@@ -233,29 +244,22 @@ pub fn unlink_item(item: &Item, dry_run: bool) -> Outcome {
     }
 }
 
-/// Re-assert the configured mode on an item's sync copy. Returns an outcome only
-/// when something was (or would be) changed.
+/// Re-assert secret perms on an item's sync copy (recursively). Returns an
+/// outcome only when something is (or would be) tightened.
 pub fn enforce_mode(cfg: &Config, item: &Item, dry_run: bool) -> Option<Outcome> {
-    let bits = item.mapping.mode_bits()?;
-    if !fsutil::path_present(&item.source) {
+    let _ = cfg;
+    if item.mapping.mode.is_none() || !fsutil::path_present(&item.source) {
         return None;
     }
-    let current = fsutil::mode_of(&item.source)?;
-    if current == bits {
-        return None;
+    if !fsutil::any_too_open(&item.source) {
+        return None; // already tight
     }
     let name = item.name().to_string();
-    let _ = cfg;
     if dry_run {
-        return Some(Outcome::new(
-            &name,
-            "would-chmod",
-            true,
-            format!("{:04o} → {:04o}", current, bits),
-        ));
+        return Some(Outcome::new(&name, "would-chmod", true, "tighten secret perms"));
     }
-    match fsutil::set_mode(&item.source, bits) {
-        Ok(_) => Some(Outcome::new(&name, "chmod", true, format!("{:04o} → {:04o}", current, bits))),
+    match fsutil::enforce_secret_tree(&item.source) {
+        Ok(_) => Some(Outcome::new(&name, "chmod", true, "tightened to 0700/0600")),
         Err(e) => Some(Outcome::new(&name, "error", false, e.to_string())),
     }
 }
