@@ -25,7 +25,7 @@ dotsync status               # confirm both show "linked"
 ```
 
 To provision non-interactively (scripts, dotfiles bootstrap): `dotsync setup
-~/Nextcloud/dotsync`. Inspect with `dotsync config`.
+~/Nextcloud/Apps/dotsync`. Inspect with `dotsync config`.
 
 ## Additional machine
 

@@ -3,8 +3,9 @@
 //!
 //! - **existing** `dotsync` folders (at a provider root or one level down, so
 //!   `Apps/dotsync/` is found) — pick to reuse;
-//! - **proposed** `<provider>/dotsync` folders that don't exist yet — pick to
-//!   create one there.
+//! - a **proposed** `<provider>/Apps/dotsync` folder to create — following the
+//!   common `<Cloud>/Apps/<app>` convention (Dropbox's App-folder pattern), so
+//!   we never litter the provider root.
 //!
 //! Purely advisory — `setup` uses the results to build the picker; the user
 //! always confirms, and can always type a path instead.
@@ -111,14 +112,16 @@ pub fn discover(home: &Path) -> Vec<Candidate> {
             );
         }
 
-        // Otherwise propose creating `<root>/dotsync`.
-        if !direct.is_dir() {
+        // Propose `<root>/Apps/dotsync` (the <Cloud>/Apps/<app> convention),
+        // unless it already exists (in which case the scan above found it).
+        let proposed = root.join("Apps").join(MARKER);
+        if !proposed.is_dir() {
             push_unique(
                 &mut out,
                 &mut seen,
                 Candidate {
                     provider: provider.clone(),
-                    path: direct,
+                    path: proposed,
                     exists: false,
                     configured: false,
                 },

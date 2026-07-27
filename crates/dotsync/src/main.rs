@@ -332,7 +332,7 @@ fn discover_or_prompt(home: &Path, json: bool) -> Result<PathBuf> {
             1 => Ok(existing[0].path.clone()),
             0 => bail!(
                 "no cloud dotsync folder found — pass a path: `dotsync setup <dir>` \
-                 (e.g. ~/Nextcloud/dotsync)"
+                 (e.g. ~/Nextcloud/Apps/dotsync)"
             ),
             _ => bail!(
                 "several cloud dotsync folders found — pass one: {}",

@@ -132,21 +132,22 @@ fn discovery_proposes_and_finds_folders() {
     let home = dir.path();
     fs::create_dir_all(home.join("Nextcloud")).unwrap();
 
-    // Provider root exists but no dotsync folder → a "create here" proposal.
+    // Provider root exists but no dotsync folder → propose <root>/Apps/dotsync.
     let cands = discovery::discover(home);
     let nc = cands
         .iter()
-        .find(|c| c.path == home.join("Nextcloud/dotsync"))
-        .expect("should propose ~/Nextcloud/dotsync");
+        .find(|c| c.path == home.join("Nextcloud/Apps/dotsync"))
+        .expect("should propose ~/Nextcloud/Apps/dotsync");
     assert!(!nc.exists && !nc.configured);
 
-    // Once it exists with a dotsync.toml, it's reported as configured.
-    fs::create_dir_all(home.join("Nextcloud/dotsync")).unwrap();
-    fs::write(home.join("Nextcloud/dotsync/dotsync.toml"), "").unwrap();
+    // An existing folder one level down (Apps/dotsync) is found and, with a
+    // dotsync.toml, reported as configured.
+    fs::create_dir_all(home.join("Nextcloud/Apps/dotsync")).unwrap();
+    fs::write(home.join("Nextcloud/Apps/dotsync/dotsync.toml"), "").unwrap();
     let cands = discovery::discover(home);
     let nc = cands
         .iter()
-        .find(|c| c.path == home.join("Nextcloud/dotsync"))
+        .find(|c| c.path == home.join("Nextcloud/Apps/dotsync"))
         .unwrap();
     assert!(nc.exists && nc.configured);
 }
