@@ -325,15 +325,18 @@ fn discover_or_prompt(home: &Path, json: bool) -> Result<PathBuf> {
     let candidates = discovery::discover(home);
 
     if json || !interactive() {
-        return match candidates.len() {
-            1 => Ok(candidates[0].path.clone()),
+        // Non-interactively, only auto-pick an already-existing folder; never
+        // silently create one.
+        let existing: Vec<_> = candidates.iter().filter(|c| c.exists).collect();
+        return match existing.len() {
+            1 => Ok(existing[0].path.clone()),
             0 => bail!(
                 "no cloud dotsync folder found — pass a path: `dotsync setup <dir>` \
                  (e.g. ~/Nextcloud/dotsync)"
             ),
             _ => bail!(
                 "several cloud dotsync folders found — pass one: {}",
-                candidates
+                existing
                     .iter()
                     .map(|c| c.path.display().to_string())
                     .collect::<Vec<_>>()
@@ -345,12 +348,14 @@ fn discover_or_prompt(home: &Path, json: bool) -> Result<PathBuf> {
     let mut labels: Vec<String> = candidates
         .iter()
         .map(|c| {
-            format!(
-                "{}  ({}{})",
-                collapse_tilde(&c.path, home),
-                c.provider,
-                if c.configured { ", configured" } else { "" }
-            )
+            let tag = if c.configured {
+                ", configured".to_string()
+            } else if c.exists {
+                String::new()
+            } else {
+                " — create here".to_string()
+            };
+            format!("{}  ({}{})", collapse_tilde(&c.path, home), c.provider, tag)
         })
         .collect();
     labels.push("Enter a path manually…".to_string());

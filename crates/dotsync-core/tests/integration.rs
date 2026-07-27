@@ -125,6 +125,33 @@ fn per_os_targets_scope_correctly() {
 }
 
 #[test]
+fn discovery_proposes_and_finds_folders() {
+    use dotsync_core::discovery;
+
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    fs::create_dir_all(home.join("Nextcloud")).unwrap();
+
+    // Provider root exists but no dotsync folder → a "create here" proposal.
+    let cands = discovery::discover(home);
+    let nc = cands
+        .iter()
+        .find(|c| c.path == home.join("Nextcloud/dotsync"))
+        .expect("should propose ~/Nextcloud/dotsync");
+    assert!(!nc.exists && !nc.configured);
+
+    // Once it exists with a dotsync.toml, it's reported as configured.
+    fs::create_dir_all(home.join("Nextcloud/dotsync")).unwrap();
+    fs::write(home.join("Nextcloud/dotsync/dotsync.toml"), "").unwrap();
+    let cands = discovery::discover(home);
+    let nc = cands
+        .iter()
+        .find(|c| c.path == home.join("Nextcloud/dotsync"))
+        .unwrap();
+    assert!(nc.exists && nc.configured);
+}
+
+#[test]
 fn mappings_file_round_trips() {
     let (_d, cfg) = sandbox();
     let path = cfg.sync_dir.join(MappingsFile::FILE_NAME);

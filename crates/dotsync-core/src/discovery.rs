@@ -1,7 +1,13 @@
 //! Auto-discovery of the cloud sync folder. Probes the common cloud-provider
-//! roots for each platform and looks for a `dotsync` folder at the root or one
-//! level down (so `Apps/dotsync/` is found). Purely advisory — `init` uses the
-//! results to propose a sync dir; the user always confirms.
+//! roots for each platform, then offers two kinds of candidate:
+//!
+//! - **existing** `dotsync` folders (at a provider root or one level down, so
+//!   `Apps/dotsync/` is found) — pick to reuse;
+//! - **proposed** `<provider>/dotsync` folders that don't exist yet — pick to
+//!   create one there.
+//!
+//! Purely advisory — `setup` uses the results to build the picker; the user
+//! always confirms, and can always type a path instead.
 
 use std::path::{Path, PathBuf};
 
@@ -10,22 +16,23 @@ use std::path::{Path, PathBuf};
 pub struct Candidate {
     /// The cloud provider label (e.g. "Nextcloud").
     pub provider: String,
-    /// The `dotsync` folder path.
+    /// The `dotsync` folder path (existing, or proposed for creation).
     pub path: PathBuf,
+    /// Whether the folder already exists.
+    pub exists: bool,
     /// Whether it already contains a `dotsync.toml` (i.e. is set up).
     pub configured: bool,
 }
 
-/// The folder name dotsync looks for inside each provider root.
+/// The folder name dotsync looks for / proposes inside each provider root.
 const MARKER: &str = "dotsync";
 
-/// Candidate provider roots under `$HOME`, as (label, relative path) pairs.
-/// Includes macOS's unified `~/Library/CloudStorage/*` clients and the common
+/// Candidate provider roots under `$HOME`, as (label, path) pairs. Includes
+/// macOS's unified `~/Library/CloudStorage/*` clients and the common
 /// Linux/legacy home-root locations.
 fn provider_roots(home: &Path) -> Vec<(String, PathBuf)> {
     let mut roots: Vec<(String, PathBuf)> = Vec::new();
 
-    // macOS File Provider clients live under ~/Library/CloudStorage/<Name-...>
     let cloud_storage = home.join("Library/CloudStorage");
     if let Ok(entries) = std::fs::read_dir(&cloud_storage) {
         for e in entries.flatten() {
@@ -35,13 +42,11 @@ fn provider_roots(home: &Path) -> Vec<(String, PathBuf)> {
         }
     }
 
-    // iCloud Drive.
     roots.push((
         "iCloud".into(),
         home.join("Library/Mobile Documents/com~apple~CloudDocs"),
     ));
 
-    // Home-root locations (Linux clients, and older macOS clients).
     for (label, rel) in [
         ("Nextcloud", "Nextcloud"),
         ("Dropbox", "Dropbox"),
@@ -56,44 +61,71 @@ fn provider_roots(home: &Path) -> Vec<(String, PathBuf)> {
     roots
 }
 
-/// Search all provider roots for a `dotsync` marker folder. De-duplicated by
-/// resolved path; configured folders (with a `dotsync.toml`) sort first.
+fn push_unique(out: &mut Vec<Candidate>, seen: &mut Vec<PathBuf>, cand: Candidate) {
+    let key = cand.path.canonicalize().unwrap_or_else(|_| cand.path.clone());
+    if seen.contains(&key) {
+        return;
+    }
+    seen.push(key);
+    out.push(cand);
+}
+
+/// Discover existing and proposed cloud folders across all provider roots.
+/// Sorted: configured first, then other existing folders, then proposals.
 pub fn discover(home: &Path) -> Vec<Candidate> {
-    let mut found: Vec<Candidate> = Vec::new();
+    let mut out: Vec<Candidate> = Vec::new();
     let mut seen: Vec<PathBuf> = Vec::new();
 
     for (provider, root) in provider_roots(home) {
         if !root.is_dir() {
             continue;
         }
-        // The marker at the provider root, and one level down (e.g. Apps/dotsync).
-        let mut candidates = vec![root.join(MARKER)];
+
+        // Existing dotsync folders: at the root, and one level down.
+        let direct = root.join(MARKER);
+        let mut existing: Vec<PathBuf> = Vec::new();
+        if direct.is_dir() {
+            existing.push(direct.clone());
+        }
         if let Ok(entries) = std::fs::read_dir(&root) {
             for e in entries.flatten() {
                 if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                    candidates.push(e.path().join(MARKER));
+                    let p = e.path().join(MARKER);
+                    if p.is_dir() {
+                        existing.push(p);
+                    }
                 }
             }
         }
-        for path in candidates {
-            if !path.is_dir() {
-                continue;
-            }
-            let key = path.canonicalize().unwrap_or_else(|_| path.clone());
-            if seen.contains(&key) {
-                continue;
-            }
-            seen.push(key);
+        for path in existing {
             let configured = path.join(super::mapping::MappingsFile::FILE_NAME).exists();
-            found.push(Candidate {
-                provider: provider.clone(),
-                path,
-                configured,
-            });
+            push_unique(
+                &mut out,
+                &mut seen,
+                Candidate {
+                    provider: provider.clone(),
+                    path,
+                    exists: true,
+                    configured,
+                },
+            );
+        }
+
+        // Otherwise propose creating `<root>/dotsync`.
+        if !direct.is_dir() {
+            push_unique(
+                &mut out,
+                &mut seen,
+                Candidate {
+                    provider: provider.clone(),
+                    path: direct,
+                    exists: false,
+                    configured: false,
+                },
+            );
         }
     }
 
-    // Configured folders (with a dotsync.toml) first.
-    found.sort_by_key(|c| std::cmp::Reverse(c.configured));
-    found
+    out.sort_by_key(|c| (!c.configured, !c.exists));
+    out
 }
