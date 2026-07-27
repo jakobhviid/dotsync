@@ -564,6 +564,41 @@ fn load_dedups_mappings_by_name() {
 }
 
 #[test]
+fn symlink_resolving_to_cloud_via_alias_is_linked_not_foreign() {
+    // A link whose target string differs from our cloud path but resolves to the
+    // same file (a symlinked/differently-normalized sync path) is still ours.
+    let (_d, cfg) = sandbox();
+    let source = cfg.sync_dir.join(".gitconfig");
+    write(&source, "x");
+    // An alias directory that resolves to the sync dir.
+    let alias = cfg.sync_dir.parent().unwrap().join("alias");
+    std::os::unix::fs::symlink(&cfg.sync_dir, &alias).unwrap();
+    // The home symlink points at the file *through* the alias.
+    let target = cfg.home.join(".gitconfig");
+    fs::create_dir_all(target.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(alias.join(".gitconfig"), &target).unwrap();
+
+    let item = state_of(&Mapping::new(".gitconfig"), &cfg, "mac");
+    assert_eq!(
+        item.state,
+        State::Linked,
+        "a link resolving to the cloud copy must be Linked, not ForeignSymlink"
+    );
+}
+
+#[test]
+fn dangling_detection_survives_the_canonical_fallback() {
+    // Guard: the canonical fallback must not turn a genuinely dangling link
+    // (cloud copy absent) into anything else — canonicalize fails on it.
+    let (_d, cfg) = sandbox();
+    let target = cfg.home.join(".vimrc");
+    write(&target, "v");
+    let (mapping, _) = apply::adopt(&cfg, &target, None, None, &[], false).unwrap();
+    fsutil::remove_path(&mapping.source(&cfg.sync_dir)).unwrap();
+    assert_eq!(state_of(&mapping, &cfg, "mac").state, State::DanglingSelf);
+}
+
+#[test]
 fn mappings_file_round_trips() {
     let (_d, cfg) = sandbox();
     let path = cfg.sync_dir.join(MappingsFile::FILE_NAME);

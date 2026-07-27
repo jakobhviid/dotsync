@@ -107,6 +107,10 @@ pub fn state_of(mapping: &Mapping, cfg: &Config, os: &str) -> Item {
                 } else {
                     State::DanglingSelf
                 }
+            } else if source_present && fsutil::same_location(&dest, &source) {
+                // The target string differs but resolves to our cloud copy (a
+                // symlinked/differently-normalized sync path) — still ours.
+                State::Linked
             } else {
                 State::ForeignSymlink(dest)
             }

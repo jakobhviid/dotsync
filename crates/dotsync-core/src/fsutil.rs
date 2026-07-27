@@ -162,6 +162,16 @@ pub fn trees_equal(a: &Path, b: &Path) -> bool {
     }
 }
 
+/// Whether two paths refer to the same real location once symlinks and path
+/// normalization are resolved. Returns `false` if either can't be resolved
+/// (e.g. a missing target), so it never masks a dangling link.
+pub fn same_location(a: &Path, b: &Path) -> bool {
+    match (fs::canonicalize(a), fs::canonicalize(b)) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => false,
+    }
+}
+
 /// Byte-compare two regular files. Returns `false` if either isn't a readable
 /// regular file, or if their contents differ.
 pub fn files_equal(a: &Path, b: &Path) -> bool {
