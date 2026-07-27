@@ -143,8 +143,9 @@ choice — but two things matter:
   inside a git repository.
 - **Modes are enforced.** Cloud clients often write files `0644`; dotsync tags
   known-secret paths with a restrictive `mode` and re-asserts it on `install` and
-  `doctor --fix`. Adopt individual secret files (`dotsync adopt ~/.ssh/config`)
-  rather than whole secret directories.
+  `doctor --fix`. Whole secret directories are safe to adopt: `dotsync adopt
+  ~/.aws` tags the directory `0700` and enforces `0700` dirs / `0600` files
+  recursively within it (re-asserted on `install` and `doctor --fix`).
 
 ## AI disclosure
 
