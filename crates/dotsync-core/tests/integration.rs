@@ -241,6 +241,51 @@ fn discovery_proposes_and_finds_folders() {
 }
 
 #[test]
+fn restore_item_swaps_symlink_for_real_copy_and_keeps_cloud() {
+    // The safety-critical `group remove` primitive: a Linked member must be
+    // turned back into a real file in $HOME while the cloud copy is preserved,
+    // and a dry-run must change nothing.
+    let (_d, cfg) = sandbox();
+    let target = cfg.home.join(".gitconfig");
+    write(&target, "[user]\n  name = j\n");
+    let (mapping, _) = apply::adopt(&cfg, &target, None, None, &[], false).unwrap();
+    let item = state_of(&mapping, &cfg, "mac");
+    assert_eq!(item.state, State::Linked);
+
+    // Dry-run leaves the symlink in place.
+    let dry = apply::restore_item(&item, true);
+    assert!(dry.ok);
+    assert!(fsutil::is_symlink(&target), "dry-run must not touch the symlink");
+
+    // Real restore: the symlink becomes a real file, the cloud copy survives.
+    let out = apply::restore_item(&item, false);
+    assert!(out.ok, "restore failed: {}", out.detail);
+    assert!(!fsutil::is_symlink(&target), "target must be a real file after restore");
+    assert_eq!(fs::read_to_string(&target).unwrap(), "[user]\n  name = j\n");
+    let source = mapping.source(&cfg.sync_dir);
+    assert!(fsutil::path_present(&source), "cloud copy must be kept");
+    assert_eq!(fs::read_to_string(&source).unwrap(), "[user]\n  name = j\n");
+}
+
+#[test]
+fn restore_item_on_dangling_symlink_just_unlinks() {
+    // If the cloud copy is already gone, there's nothing to restore — the
+    // dangling symlink is simply removed (never leaving an empty file behind).
+    let (_d, cfg) = sandbox();
+    let target = cfg.home.join(".vimrc");
+    write(&target, "set nocompatible");
+    let (mapping, _) = apply::adopt(&cfg, &target, None, None, &[], false).unwrap();
+    fsutil::remove_path(&mapping.source(&cfg.sync_dir)).unwrap();
+    let item = state_of(&mapping, &cfg, "mac");
+    assert_eq!(item.state, State::DanglingSelf);
+
+    let out = apply::restore_item(&item, false);
+    assert!(out.ok, "unlink failed: {}", out.detail);
+    assert!(!fsutil::is_symlink(&target), "dangling symlink must be removed");
+    assert!(!fsutil::path_present(&target), "no empty file left behind");
+}
+
+#[test]
 fn mappings_file_round_trips() {
     let (_d, cfg) = sandbox();
     let path = cfg.sync_dir.join(MappingsFile::FILE_NAME);

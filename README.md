@@ -55,9 +55,10 @@ configured.
 | `dotsync setup [dir]` | Provision this machine and install completions. Usually unnecessary — the first run of any command offers this automatically. With no `dir`, auto-discovers a `dotsync` folder across common cloud providers (or type your own path). |
 | `dotsync config` | Show the resolved sync folder, home base, and config path. |
 | `dotsync` / `dotsync status` | Show the overview: every mapping and its state on this machine. Bare `dotsync` opens the interactive picker on a terminal. |
-| `dotsync adopt <paths…> [--group <name>] [--mac\|--linux]` | Move existing `$HOME` files/dirs into the cloud folder and symlink them back. Chain several paths to adopt them together; `--group` (or an interactive picker) files them under one group. `--mac`/`--linux` scopes to one OS. |
-| `dotsync install [names…] [--all] [--dry-run]` | Link mappings on this machine. No args on a terminal opens the picker; `--all` links everything applicable. |
+| `dotsync adopt <paths…> [--group <name>] [--mac\|--linux]` | Move existing `$HOME` files/dirs into the cloud folder and symlink them back. Chain several paths to adopt them together. Every mapping belongs to a group: `--group` sets it, otherwise it's derived from the path (interactive picker on a terminal, auto-derived and echoed non-interactively). `--mac`/`--linux` scopes to one OS. |
+| `dotsync install [names…] [--all] [--dry-run]` | Link mappings on this machine. No args on a terminal opens the picker; `--all` links everything applicable. A name matches a group (all its members) or a single mapping. |
 | `dotsync uninstall [names…] [--all] [--dry-run]` | Remove dotsync's symlinks here (the cloud copies stay). |
+| `dotsync group <list\|rename\|move\|remove>` | Manage groups. `list` shows groups and their members; `rename <old> <new>` relabels a group (merges if `<new>` exists); `move <path> <group>` reassigns one mapping; `remove <group>` restores its files to `$HOME` (cloud copies kept) and drops the mappings from `dotsync.toml` on **every** machine — asks first (or `--yes`), supports `--dry-run`. |
 | `dotsync doctor [--fix]` | Detect atomic-save clobbers, conflicts, dangling/foreign links, secret-mode drift, and cloud conflict copies; `--fix` repairs the safe ones. |
 
 Global flags: `--json` (machine-readable output on every command) and `--llm`
@@ -96,20 +97,31 @@ target_mac = "~/.config/linearmouse"   # mac only (no linux target) → skipped 
 
 ## Groups
 
-Related mappings can share a **group** label so you manage them as a unit. Chain
-paths when adopting, or pick a group interactively:
+Every mapping belongs to a **group**, so related config is managed as a unit.
+Chain paths when adopting to file them together; pass `--group`, or let dotsync
+derive the name from the path (`~/.config/zed` → `zed`) — on a terminal it offers
+a picker, non-interactively it uses the derived name and echoes it. Group names
+live in their **own namespace**: they can't contain `/` or start with `.` (that's
+the mapping-path namespace), so a group name and a mapping name can never be
+confused when used as a selector.
 
 ```sh
 dotsync adopt ~/.claude/CLAUDE.md ~/.claude/settings.json --group claude
-dotsync adopt ~/.claude/keybindings.json          # picker offers "claude", "New group…", etc.
+dotsync adopt ~/.config/zed                       # derives and assigns group "zed"
 dotsync install claude                            # a group name works as a selector
+
+dotsync group list                                # groups and their members
+dotsync group rename claude claude-code           # relabel (merges if the name exists)
+dotsync group move .config/zed editors            # reassign one mapping
+dotsync group remove claude                       # restore its files here, un-sync everywhere
 ```
 
 In `status` a group shows its members indented under a `group · N/M linked`
-header; in the interactive picker a group collapses to a single row that links
-or unlinks all its members at once. Groups are just a label on ordinary
-mappings — everything else (mirror layout, per-file state, self-healing) is
-unchanged.
+header; in the interactive picker a group collapses to a single row. `group
+remove` is the safe way to stop syncing a whole group everywhere — it restores
+the real files here (cloud copies kept) before dropping the mappings, and warns
+that the removal propagates to every machine. Everything else (mirror layout,
+per-file state, self-healing) is unchanged.
 
 ## Self-healing
 

@@ -67,6 +67,11 @@ enum Cmd {
     },
     /// Show the resolved per-machine configuration.
     Config,
+    /// Manage groups (list, rename, move a mapping, remove a group).
+    Group {
+        #[command(subcommand)]
+        action: GroupCmd,
+    },
     /// Show every mapping and its state on this machine.
     Status,
     /// Move existing $HOME paths into the cloud folder and symlink them back.
@@ -122,6 +127,30 @@ enum Cmd {
     Man,
 }
 
+#[derive(Subcommand)]
+enum GroupCmd {
+    /// List groups and their members.
+    List,
+    /// Rename a group (relabels all its members; merges if the name exists).
+    Rename { old: String, new: String },
+    /// Move a mapping (by its path name) into a group.
+    #[command(visible_alias = "mv")]
+    Move { path: String, group: String },
+    /// Stop managing a group: restore its files to $HOME, keep the cloud copies,
+    /// and remove it from dotsync.toml (affects every machine).
+    #[command(visible_alias = "rm")]
+    Remove {
+        /// The group to remove.
+        name: String,
+        /// Show what would happen without changing anything.
+        #[arg(long)]
+        dry_run: bool,
+        /// Proceed without the interactive confirmation.
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
 fn main() -> ExitCode {
     // `--llm` is a documentation flag like `--help`: works from anywhere, needs
     // no subcommand, so intercept it before clap enforces one.
@@ -158,6 +187,7 @@ fn run(cli: &Cli) -> Result<ExitCode> {
             provision(dir.clone(), home.clone(), *shell, cli.json).map(|_| ExitCode::SUCCESS)
         }
         Some(Cmd::Config) => cmd_config(cli.json),
+        Some(Cmd::Group { action }) => cmd_group(action, cli.json),
         Some(Cmd::Adopt {
             paths,
             group,
@@ -478,7 +508,7 @@ fn cmd_adopt(
             mapping::validate_group_name(&g)?;
             g.trim().to_string()
         }
-        None if !json && interactive() => choose_group(&mappings, &suggestion)?,
+        None if !json && interactive() => choose_group(&mappings, &suggestion, &rel)?,
         None => {
             mapping::validate_group_name(&suggestion)?;
             suggestion.clone()
@@ -512,9 +542,10 @@ fn cmd_adopt(
 
 /// Interactive group picker for `adopt`: pick an existing group or create one
 /// (pre-filled with the suggested name). Groups are mandatory — no "none".
-fn choose_group(mappings: &MappingsFile, suggestion: &str) -> Result<String> {
-    let groups = mappings.groups();
-
+/// Existing groups are ordered by the deepest directory they share with the
+/// paths being adopted, so a sibling's group floats to the top and is the
+/// default; when nothing shares a directory, "New group…" is the default.
+fn choose_group(mappings: &MappingsFile, suggestion: &str, rel: &[String]) -> Result<String> {
     let make_new = |prompt: &str| -> Result<String> {
         let name: String = Input::with_theme(&ColorfulTheme::default())
             .with_prompt(prompt)
@@ -524,16 +555,36 @@ fn choose_group(mappings: &MappingsFile, suggestion: &str) -> Result<String> {
         Ok(name.trim().to_string())
     };
 
-    if groups.is_empty() {
+    let all = mappings.groups();
+    if all.is_empty() {
         return make_new("Group name");
     }
 
+    let mut scored: Vec<(String, usize)> = all
+        .iter()
+        .map(|g| {
+            let score = mappings
+                .mappings
+                .iter()
+                .filter(|m| m.group.as_deref() == Some(g.as_str()))
+                .flat_map(|m| rel.iter().map(move |p| shared_dir_depth(&m.name, p)))
+                .max()
+                .unwrap_or(0);
+            (g.clone(), score)
+        })
+        .collect();
+    scored.sort_by_key(|(_, s)| std::cmp::Reverse(*s));
+    let best = scored.first().map(|(_, s)| *s).unwrap_or(0);
+    let groups: Vec<String> = scored.into_iter().map(|(g, _)| g).collect();
+
     let mut items = groups.clone();
     items.push("+ New group…".to_string());
+    let default_idx = if best > 0 { 0 } else { groups.len() };
+
     let idx = Select::with_theme(&ColorfulTheme::default())
         .with_prompt("Add to which group?")
         .items(&items)
-        .default(0)
+        .default(default_idx)
         .interact()?;
 
     if idx < groups.len() {
@@ -541,6 +592,165 @@ fn choose_group(mappings: &MappingsFile, suggestion: &str) -> Result<String> {
     } else {
         make_new("New group name")
     }
+}
+
+/// Number of leading *directory* components two home-relative paths share.
+fn shared_dir_depth(a: &str, b: &str) -> usize {
+    fn dirs(s: &str) -> Vec<&str> {
+        let mut c: Vec<&str> = s.split('/').collect();
+        c.pop(); // drop the leaf
+        c
+    }
+    dirs(a)
+        .iter()
+        .zip(dirs(b).iter())
+        .take_while(|(x, y)| x == y)
+        .count()
+}
+
+fn cmd_group(action: &GroupCmd, json: bool) -> Result<ExitCode> {
+    match action {
+        GroupCmd::List => cmd_group_list(json),
+        GroupCmd::Rename { old, new } => cmd_group_rename(old, new, json),
+        GroupCmd::Move { path, group } => cmd_group_move(path, group, json),
+        GroupCmd::Remove { name, dry_run, yes } => cmd_group_remove(name, *dry_run, *yes, json),
+    }
+}
+
+fn cmd_group_list(json: bool) -> Result<ExitCode> {
+    let (_cfg, mappings) = load_ctx(json)?;
+    let groups = mappings.groups();
+    let members_of = |g: &str| -> Vec<String> {
+        mappings
+            .mappings
+            .iter()
+            .filter(|m| m.group.as_deref() == Some(g))
+            .map(|m| m.name.clone())
+            .collect()
+    };
+    if json {
+        let arr: Vec<_> = groups
+            .iter()
+            .map(|g| json!({ "name": g, "members": members_of(g) }))
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&json!({ "groups": arr }))?);
+        return Ok(ExitCode::SUCCESS);
+    }
+    if groups.is_empty() {
+        ui::info("no groups yet — `dotsync adopt <path>` creates one");
+        return Ok(ExitCode::SUCCESS);
+    }
+    for g in &groups {
+        let members = members_of(g);
+        println!(
+            "  {}  {}",
+            ui::bold(g),
+            ui::dim(&format!("{} member{}", members.len(), plural(members.len())))
+        );
+        for m in members {
+            println!("      {}", m);
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn cmd_group_rename(old: &str, new: &str, json: bool) -> Result<ExitCode> {
+    let (cfg, mut mappings) = load_ctx(json)?;
+    mapping::validate_group_name(new)?;
+    let count = mappings
+        .mappings
+        .iter()
+        .filter(|m| m.group.as_deref() == Some(old))
+        .count();
+    if count == 0 {
+        bail!("no group named {old:?}");
+    }
+    let merging = mappings.groups().iter().any(|g| g == new);
+    for m in mappings.mappings.iter_mut() {
+        if m.group.as_deref() == Some(old) {
+            m.group = Some(new.to_string());
+        }
+    }
+    mappings.save(&cfg.sync_dir.join(MappingsFile::FILE_NAME))?;
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "renamed": old, "to": new, "members": count, "merged": merging
+            }))?
+        );
+    } else {
+        let note = if merging { " (merged into existing group)" } else { "" };
+        ui::ok(&format!("renamed group '{old}' → '{new}' — {count} member{}{note}", plural(count)));
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn cmd_group_move(path: &str, group: &str, json: bool) -> Result<ExitCode> {
+    let (cfg, mut mappings) = load_ctx(json)?;
+    mapping::validate_group_name(group)?;
+    let m = mappings
+        .mappings
+        .iter_mut()
+        .find(|m| m.name == path)
+        .ok_or_else(|| anyhow!("no mapping named {path:?}"))?;
+    m.group = Some(group.to_string());
+    mappings.save(&cfg.sync_dir.join(MappingsFile::FILE_NAME))?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&json!({ "moved": path, "group": group }))?);
+    } else {
+        ui::ok(&format!("moved {path} → group '{group}'"));
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn cmd_group_remove(name: &str, dry_run: bool, yes: bool, json: bool) -> Result<ExitCode> {
+    let (cfg, mut mappings) = load_ctx(json)?;
+    let items = plan(&mappings, &cfg, current_os());
+    let members: Vec<&Item> = items
+        .iter()
+        .filter(|i| i.mapping.group.as_deref() == Some(name))
+        .collect();
+    if members.is_empty() {
+        bail!("no group named {name:?}");
+    }
+
+    if !dry_run && !yes {
+        if json || !interactive() {
+            bail!(
+                "removing group {name:?} restores {n} file(s) here and removes them from \
+                 dotsync.toml on ALL machines — pass --yes to confirm",
+                n = members.len()
+            );
+        }
+        let ok = Confirm::with_theme(&ColorfulTheme::default())
+            .with_prompt(format!(
+                "Remove group '{name}'? Restores {} file(s) here (cloud copies kept) and removes \
+                 them from dotsync.toml on ALL machines.",
+                members.len()
+            ))
+            .default(false)
+            .interact()?;
+        if !ok {
+            bail!("aborted");
+        }
+    }
+
+    let mut outcomes = Vec::new();
+    let mut removed: Vec<String> = Vec::new();
+    for it in &members {
+        let out = apply::restore_item(it, dry_run);
+        if out.ok {
+            removed.push(it.name().to_string());
+        }
+        outcomes.push(out);
+    }
+    if !dry_run {
+        mappings.mappings.retain(|m| !removed.contains(&m.name));
+        mappings.save(&cfg.sync_dir.join(MappingsFile::FILE_NAME))?;
+    }
+    report_outcomes(&outcomes, &cfg.home, json);
+    Ok(exit_from(&outcomes))
 }
 
 fn select_items<'a>(items: &'a [Item], names: &[String], all: bool) -> Result<Vec<&'a Item>> {

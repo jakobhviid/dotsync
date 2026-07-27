@@ -259,6 +259,52 @@ pub fn unlink_item(item: &Item, dry_run: bool) -> Outcome {
     }
 }
 
+/// Restore a member to a real file/dir in `$HOME` (as part of un-managing it),
+/// leaving the cloud copy untouched. Safe ordering: copy the cloud copy to a
+/// temp sibling, then swap the symlink for it — so a failure mid-restore loses
+/// nothing (the cloud copy is always kept, the symlink stays until the swap).
+pub fn restore_item(item: &Item, dry_run: bool) -> Outcome {
+    let name = item.name().to_string();
+    let Some(target) = item.target.clone() else {
+        return Outcome::new(&name, "skipped", true, "not for this OS");
+    };
+    match &item.state {
+        State::Linked => {
+            if !fsutil::path_present(&item.source) {
+                return Outcome::new(&name, "error", false, "cloud copy missing — cannot restore");
+            }
+            if dry_run {
+                return Outcome::new(&name, "would-restore", true, "copy cloud → $HOME, keep cloud copy");
+            }
+            let tmp = fsutil::temp_sibling(&target);
+            let _ = fsutil::remove_path(&tmp);
+            if let Err(e) = fsutil::copy_recursive(&item.source, &tmp) {
+                let _ = fsutil::remove_path(&tmp);
+                return Outcome::new(&name, "error", false, format!("restore copy failed: {e}"));
+            }
+            // Swap only after the copy succeeded: drop the symlink, move the real
+            // copy into its place (a same-dir rename).
+            if let Err(e) = fsutil::remove_symlink(&target).and_then(|_| fsutil::move_path(&tmp, &target)) {
+                let _ = fsutil::remove_path(&tmp);
+                return Outcome::new(&name, "error", false, e.to_string());
+            }
+            Outcome::new(&name, "restored", true, "real copy in $HOME; cloud copy kept")
+        }
+        State::DanglingSelf => {
+            if dry_run {
+                return Outcome::new(&name, "would-unlink", true, "cloud copy missing");
+            }
+            match fsutil::remove_symlink(&target) {
+                Ok(_) => Outcome::new(&name, "unlinked", true, "cloud copy was missing"),
+                Err(e) => Outcome::new(&name, "error", false, e.to_string()),
+            }
+        }
+        // Not linked on this machine: nothing to restore here; the caller still
+        // drops it from dotsync.toml (that's the cross-machine "stop managing").
+        _ => Outcome::new(&name, "skipped", true, "not linked here"),
+    }
+}
+
 /// Re-assert secret perms on an item's sync copy (recursively). Returns an
 /// outcome only when something is (or would be) tightened.
 pub fn enforce_mode(cfg: &Config, item: &Item, dry_run: bool) -> Option<Outcome> {
