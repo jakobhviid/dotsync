@@ -340,6 +340,25 @@ fn doctor_advises_partially_linked_group() {
 }
 
 #[test]
+fn doctor_flags_a_conflicted_mappings_file() {
+    // A cloud provider forked dotsync.toml (OneDrive-style host suffix, which the
+    // generic conflicted-copy scan misses). doctor must call it out specifically.
+    let (_d, cfg) = sandbox();
+    fs::write(
+        cfg.sync_dir.join("dotsync-DESKTOP-AB12.toml"),
+        "[[mapping]]\nname = \".vimrc\"\n",
+    )
+    .unwrap();
+    let report = doctor::run(&cfg, &MappingsFile::default(), "mac", false).unwrap();
+    assert!(
+        report.advisories().any(|i| i.name == "dotsync-DESKTOP-AB12.toml"
+            && i.message.contains("conflicted copy of dotsync.toml")),
+        "a forked mappings file should be flagged specifically"
+    );
+    assert!(report.healthy(), "a conflicted copy is an advisory, not fatal");
+}
+
+#[test]
 fn mappings_file_round_trips() {
     let (_d, cfg) = sandbox();
     let path = cfg.sync_dir.join(MappingsFile::FILE_NAME);

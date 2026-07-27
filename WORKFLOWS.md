@@ -173,7 +173,11 @@ whose mapping was removed on another machine, or a group you use here that gaine
 members you haven't linked. `--fix` repairs only the safe cases (relink when
 content matches; chmod secrets back to their mode); genuine conflicts and drift
 are surfaced read-only for you to resolve (`adopt` an orphan to re-track it,
-`install <group>` to link the newcomers).
+`install <group>` to link the newcomers). A forked `dotsync.toml` — the shared
+mapping list edited on two machines — is called out specifically (including the
+OneDrive `dotsync-HOST.toml` / iCloud `dotsync 2.toml` names the generic scan
+misses); union its `[[mapping]]` entries back into `dotsync.toml` by hand and
+delete the copy.
 
 ## Removing
 

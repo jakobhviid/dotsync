@@ -156,10 +156,41 @@ pub fn run(cfg: &Config, mappings: &MappingsFile, os: &str, fix: bool) -> Result
         }
     }
 
-    // Cloud "conflicted copy" siblings anywhere in the sync folder.
+    // The dangerous conflicted copy is one of the mappings file itself — the
+    // shared mapping list forked. Catch the cloud-specific names the generic
+    // scan misses (OneDrive `dotsync-HOST.toml`, iCloud `dotsync 2.toml`) by
+    // matching any `dotsync*.toml` at the sync root that isn't the real one.
+    let mut mapping_conflicts = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&cfg.sync_dir) {
+        for entry in entries.flatten() {
+            let fname = entry.file_name().to_string_lossy().into_owned();
+            let lower = fname.to_ascii_lowercase();
+            if lower.starts_with("dotsync")
+                && lower.ends_with(".toml")
+                && lower != MappingsFile::FILE_NAME
+            {
+                mapping_conflicts.push(fname);
+            }
+        }
+    }
+    for fname in &mapping_conflicts {
+        report.issues.push(Issue {
+            name: fname.clone(),
+            level: Level::Warn,
+            message: "a conflicted copy of dotsync.toml — two machines edited the mapping list. \
+                      Union its [[mapping]] entries into dotsync.toml (by name) and delete this copy"
+                .into(),
+            fixable: false,
+        });
+    }
+
+    // Other cloud "conflicted copy" siblings anywhere in the sync folder.
     let mut conflicts = Vec::new();
     scan_conflicted(&cfg.sync_dir, &cfg.sync_dir, &mut conflicts);
     for rel in conflicts {
+        if mapping_conflicts.contains(&rel) {
+            continue; // already reported with the specific mappings-file message
+        }
         report.issues.push(Issue {
             name: rel,
             level: Level::Warn,
