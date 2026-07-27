@@ -91,10 +91,10 @@ per path that exists on **both** sides (local real file *and* cloud copy).
    - existing mapping: `dotsync install <name>` (or `dotsync doctor --fix`) — a
      real file matching the cloud copy is `healable`, so it's relinked cleanly.
 
-   (Equivalent shortcut once the merge is in the cloud copy: set
-   `on_conflict = "adopt"` on the mapping and `dotsync install <name>` — the
-   now-merged cloud copy wins and the redundant local file is backed up to
-   `.bak`.)
+   (Equivalent shortcut once the merge is in the cloud copy: `dotsync install
+   <name> --adopt` — the now-merged cloud copy wins for this run and the
+   redundant local file is backed up to `.bak`, no `on_conflict` hand-edit
+   needed. Preview any adopt first with `dotsync adopt <path> --dry-run`.)
 
 5. **Verify and clean up.** `dotsync status` should show every migrated path
    `linked` with no remaining conflicts, and `dotsync doctor` clean. Once the
@@ -186,6 +186,7 @@ delete the copy.
 dotsync uninstall .config/zed          # remove the symlink here; cloud copy + mapping stay
 dotsync uninstall --all                # unlink everything on this machine
 
+dotsync unadopt .config/zed            # stop syncing one mapping everywhere (safe restore)
 dotsync group remove claude            # stop syncing a whole group everywhere
 dotsync group remove claude --dry-run  # preview first; --yes skips the confirm
 ```
@@ -198,9 +199,10 @@ lost and the cloud copy is kept), then removes the mappings from `dotsync.toml`
 — which propagates to every machine. Because that edit is global it asks first
 (or pass `--yes`) and supports `--dry-run`.
 
-To stop syncing a *single* mapping everywhere, delete its `[[mapping]]` from
-`dotsync.toml` and move the folder out of the cloud directory by hand (a
-per-mapping `remove` isn't wired yet).
+To stop syncing a *single* mapping everywhere, `dotsync unadopt <name>` — the
+same safe copy-then-swap restore and all-machines `dotsync.toml` removal as
+`group remove`, scoped to one (or several) mappings, with the same
+confirm/`--yes`/`--dry-run` guardrails.
 
 ## Invariants
 

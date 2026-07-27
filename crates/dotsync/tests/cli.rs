@@ -179,6 +179,33 @@ fn doctor_prints_advisories_to_stdout() {
 }
 
 #[test]
+fn unadopt_drops_mapping_from_config() {
+    let (_d, home, xdg, sync) = configured(&[(".config/zed/settings.json", "zed")]);
+    dotsync(&home, &xdg)
+        .args(["unadopt", ".config/zed/settings.json", "--yes", "--json"])
+        .assert()
+        .success();
+    assert!(
+        reload(&sync).find(".config/zed/settings.json").is_none(),
+        "un-adopted mapping should be gone from dotsync.toml"
+    );
+}
+
+#[test]
+fn unadopt_without_yes_refuses() {
+    let (_d, home, xdg, sync) = configured(&[(".config/zed/settings.json", "zed")]);
+    dotsync(&home, &xdg)
+        .args(["unadopt", ".config/zed/settings.json", "--json"])
+        .assert()
+        .failure()
+        .stdout(predicates::str::contains("--yes"));
+    assert!(
+        reload(&sync).find(".config/zed/settings.json").is_some(),
+        "must not have removed it without --yes"
+    );
+}
+
+#[test]
 fn group_remove_dry_run_changes_nothing() {
     let (_d, home, xdg, sync) = configured(&[(".config/zed/settings.json", "zed")]);
     dotsync(&home, &xdg)

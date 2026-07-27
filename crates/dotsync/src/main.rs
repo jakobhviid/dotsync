@@ -88,6 +88,9 @@ enum Cmd {
         /// Scope the mappings to Linux only.
         #[arg(long)]
         linux: bool,
+        /// Show what would happen without moving anything.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Link mappings on this machine (interactive picker with no args).
     Install {
@@ -99,6 +102,23 @@ enum Cmd {
         /// Show what would happen without touching anything.
         #[arg(long)]
         dry_run: bool,
+        /// On a conflict, let the cloud copy win and back the local file up to
+        /// `<path>.bak` (a one-shot `on_conflict = "adopt"` for this run).
+        #[arg(long)]
+        adopt: bool,
+    },
+    /// Stop syncing one or more mappings everywhere: restore them to $HOME (cloud
+    /// copies kept) and remove them from dotsync.toml (affects every machine).
+    Unadopt {
+        /// Mapping names to un-adopt.
+        #[arg(required = true)]
+        names: Vec<String>,
+        /// Show what would happen without changing anything.
+        #[arg(long)]
+        dry_run: bool,
+        /// Proceed without the interactive confirmation.
+        #[arg(long)]
+        yes: bool,
     },
     /// Remove dotsync's symlinks on this machine (cloud copies stay).
     Uninstall {
@@ -193,18 +213,25 @@ fn run(cli: &Cli) -> Result<ExitCode> {
             group,
             mac,
             linux,
-        }) => cmd_adopt(paths, group.clone(), *mac, *linux, cli.json),
+            dry_run,
+        }) => cmd_adopt(paths, group.clone(), *mac, *linux, *dry_run, cli.json),
         Some(Cmd::Status) => cmd_status(cli.json),
         Some(Cmd::Install {
             names,
             all,
             dry_run,
-        }) => cmd_install(names, *all, *dry_run, cli.json),
+            adopt,
+        }) => cmd_install(names, *all, *dry_run, *adopt, cli.json),
         Some(Cmd::Uninstall {
             names,
             all,
             dry_run,
         }) => cmd_uninstall(names, *all, *dry_run, cli.json),
+        Some(Cmd::Unadopt {
+            names,
+            dry_run,
+            yes,
+        }) => cmd_unadopt(names, *dry_run, *yes, cli.json),
         Some(Cmd::Doctor { fix }) => cmd_doctor(*fix, cli.json),
         None => cmd_default(cli.json),
     }
@@ -468,6 +495,7 @@ fn cmd_adopt(
     group: Option<String>,
     mac: bool,
     linux: bool,
+    dry_run: bool,
     json: bool,
 ) -> Result<ExitCode> {
     let cfg = ensure_config(json)?;
@@ -528,11 +556,13 @@ fn cmd_adopt(
         // A new mapping's name must not collide with an existing group name.
         let name = apply::mapping_name_for(&cfg, &abs)?;
         mapping::ensure_free_of_group(&name, &mappings)?;
-        let (m, outcome) = apply::adopt(&cfg, &abs, os_scope, Some(group.clone()), &existing, false)?;
+        let (m, outcome) = apply::adopt(&cfg, &abs, os_scope, Some(group.clone()), &existing, dry_run)?;
         mappings.upsert(m);
         outcomes.push(outcome);
     }
-    mappings.save(&mappings_path)?;
+    if !dry_run {
+        mappings.save(&mappings_path)?;
+    }
 
     if json {
         let arr: Vec<_> = outcomes.iter().map(outcome_json).collect();
@@ -809,12 +839,21 @@ fn select_items<'a>(items: &'a [Item], names: &[String], all: bool) -> Result<Ve
     }
 }
 
-fn cmd_install(names: &[String], all: bool, dry_run: bool, json: bool) -> Result<ExitCode> {
-    let (cfg, mappings) = load_ctx(json)?;
+fn cmd_install(names: &[String], all: bool, dry_run: bool, adopt: bool, json: bool) -> Result<ExitCode> {
+    let (cfg, mut mappings) = load_ctx(json)?;
+    // `--adopt` is a one-shot conflict policy for this run: let the cloud copy
+    // win, backing the local file up to `<path>.bak`. Applied in-memory only —
+    // never persisted to dotsync.toml.
+    if adopt {
+        for m in mappings.mappings.iter_mut() {
+            m.on_conflict = mapping::OnConflict::Adopt;
+        }
+    }
     let items = plan(&mappings, &cfg, current_os());
 
-    // No explicit selection on a terminal → interactive picker.
-    let use_picker = names.is_empty() && !all && !json && !dry_run && interactive();
+    // No explicit selection on a terminal → interactive picker. `--adopt` is a
+    // deliberate override, so it takes the explicit path, not the picker.
+    let use_picker = names.is_empty() && !all && !json && !dry_run && !adopt && interactive();
     if use_picker {
         overview::render(&items, &cfg);
         let outcomes = picker::run(&items, &cfg.home)?;
@@ -850,6 +889,56 @@ fn cmd_uninstall(names: &[String], all: bool, dry_run: bool, json: bool) -> Resu
         .iter()
         .map(|i| apply::unlink_item(i, dry_run))
         .collect();
+    report_outcomes(&outcomes, &cfg.home, json);
+    Ok(exit_from(&outcomes))
+}
+
+fn cmd_unadopt(names: &[String], dry_run: bool, yes: bool, json: bool) -> Result<ExitCode> {
+    let (cfg, mut mappings) = load_ctx(json)?;
+    let items = plan(&mappings, &cfg, current_os());
+    // Resolve each name to a single mapping (groups go through `group remove`).
+    let mut targets: Vec<&Item> = Vec::new();
+    for n in names {
+        match items.iter().find(|i| i.name() == n) {
+            Some(it) => targets.push(it),
+            None => bail!("no mapping named {n:?}"),
+        }
+    }
+
+    if !dry_run && !yes {
+        if json || !interactive() {
+            bail!(
+                "un-adopting {n} mapping(s) restores them here and removes them from dotsync.toml \
+                 on ALL machines — pass --yes to confirm",
+                n = targets.len()
+            );
+        }
+        let ok = Confirm::with_theme(&ColorfulTheme::default())
+            .with_prompt(format!(
+                "Un-adopt {} mapping(s)? Restores them to $HOME here (cloud copies kept) and \
+                 removes them from dotsync.toml on ALL machines.",
+                targets.len()
+            ))
+            .default(false)
+            .interact()?;
+        if !ok {
+            bail!("aborted");
+        }
+    }
+
+    let mut outcomes = Vec::new();
+    let mut removed: Vec<String> = Vec::new();
+    for it in &targets {
+        let out = apply::restore_item(it, dry_run);
+        if out.ok {
+            removed.push(it.name().to_string());
+        }
+        outcomes.push(out);
+    }
+    if !dry_run {
+        mappings.mappings.retain(|m| !removed.contains(&m.name));
+        mappings.save(&cfg.sync_dir.join(MappingsFile::FILE_NAME))?;
+    }
     report_outcomes(&outcomes, &cfg.home, json);
     Ok(exit_from(&outcomes))
 }

@@ -436,6 +436,45 @@ fn dry_run_link_does_not_fail_on_dangling() {
 }
 
 #[test]
+fn adopt_dry_run_previews_without_moving() {
+    let (_d, cfg) = sandbox();
+    let target = cfg.home.join(".gitconfig");
+    write(&target, "x");
+    let (_m, out) = apply::adopt(&cfg, &target, None, None, &[], true).unwrap();
+    assert!(out.ok);
+    assert_eq!(out.action, "would-adopt");
+    assert!(!fsutil::is_symlink(&target), "dry-run must not symlink");
+    assert!(
+        !fsutil::path_present(&cfg.sync_dir.join(".gitconfig")),
+        "dry-run must not create the cloud copy"
+    );
+}
+
+#[test]
+fn divergence_with_adopt_policy_backs_up_and_links() {
+    // The mechanism behind `install --adopt`: a Diverged item with on_conflict =
+    // adopt backs the local file up to .bak and links the cloud copy.
+    let (_d, cfg) = sandbox();
+    let target = cfg.home.join(".gitconfig");
+    write(&target, "original");
+    let (mut mapping, _) = apply::adopt(&cfg, &target, None, None, &[], false).unwrap();
+    fsutil::remove_symlink(&target).unwrap();
+    fs::write(&target, "changed locally").unwrap();
+
+    mapping.on_conflict = dotsync_core::mapping::OnConflict::Adopt;
+    let item = state_of(&mapping, &cfg, "mac");
+    assert_eq!(item.state, State::Diverged);
+    let out = apply::link_item(&item, false);
+    assert!(out.ok);
+    assert!(fsutil::is_symlink(&target), "cloud copy should be linked");
+    assert_eq!(
+        fs::read_to_string(cfg.home.join(".gitconfig.bak")).unwrap(),
+        "changed locally",
+        "local content must be preserved in .bak"
+    );
+}
+
+#[test]
 fn mappings_file_round_trips() {
     let (_d, cfg) = sandbox();
     let path = cfg.sync_dir.join(MappingsFile::FILE_NAME);
