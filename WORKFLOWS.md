@@ -83,8 +83,8 @@ per path that exists on **both** sides (local real file *and* cloud copy).
    reversible until the user has confirmed the result.
 
 4. **Take over the location.** Once the cloud copy holds the merged result, make
-   the local file **byte-identical** to it (`cp <sync-dir>/dotsync/<name> <path>`),
-   then:
+   the local path **identical** to it (`cp` the file, or the whole directory —
+   dotsync reconciles matching directory trees, not just single files), then:
    - new path (not a mapping yet): `dotsync adopt <path>` — content now matches,
      so adopt removes the local file and symlinks it to the cloud copy
      (`relinked`) instead of refusing.
@@ -172,9 +172,9 @@ downloaded yet), foreign symlinks, secret-mode drift, cloud "conflicted copy"
 files, and cross-machine drift — an orphan symlink pointing into the cloud folder
 whose mapping was removed on another machine, or a group you use here that gained
 members you haven't linked. `--fix` repairs only the safe cases (relink when
-content matches; chmod secrets back to their mode); genuine conflicts and drift
-are surfaced read-only for you to resolve (`adopt` an orphan to re-track it,
-`install <group>` to link the newcomers). A forked `dotsync.toml` — the shared
+content matches; chmod secrets back to their mode; **clear orphan symlinks**,
+cloud copies kept). Genuine conflicts are left for you; other drift is advisory
+(`adopt` an orphan instead to re-track it, `install <group>` to link newcomers). A forked `dotsync.toml` — the shared
 mapping list edited on two machines — is called out specifically (including the
 OneDrive `dotsync-HOST.toml` / iCloud `dotsync 2.toml` names the generic scan
 misses); union its `[[mapping]]` entries back into `dotsync.toml` by hand and

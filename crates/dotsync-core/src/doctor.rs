@@ -234,14 +234,37 @@ pub fn run(cfg: &Config, mappings: &MappingsFile, os: &str, fix: bool) -> Result
     let mut orphans = Vec::new();
     scan_orphans(&cfg.sync_dir, &cfg.sync_dir, cfg, mappings, &mut orphans);
     for rel in orphans {
-        report.issues.push(Issue {
-            name: rel,
-            level: Level::Warn,
-            message: "symlinked into the cloud folder but no mapping covers it (drift from another \
-                      machine) — `dotsync adopt` it to re-track, or remove the symlink"
-                .into(),
-            fixable: false,
-        });
+        let target = cfg.home.join(&rel);
+        if fix {
+            // Removing the orphan symlink is safe — the cloud copy stays, so it's
+            // reversible via `adopt`. Re-check it's still a symlink first.
+            if crate::fsutil::is_symlink(&target) {
+                match crate::fsutil::remove_symlink(&target) {
+                    Ok(_) => report.fixed.push(Outcome::new(
+                        &rel,
+                        "unlinked-orphan",
+                        true,
+                        "removed a symlink with no mapping (cloud copy kept)",
+                    )),
+                    Err(e) => report.issues.push(Issue {
+                        name: rel,
+                        level: Level::Error,
+                        message: format!("could not remove orphan symlink: {e}"),
+                        fixable: false,
+                    }),
+                }
+            }
+        } else {
+            report.issues.push(Issue {
+                name: rel,
+                level: Level::Warn,
+                message: "symlinked into the cloud folder but no mapping covers it (drift from \
+                          another machine) — `dotsync doctor --fix` removes it (cloud copy kept), \
+                          or `dotsync adopt` to re-track"
+                    .into(),
+                fixable: true,
+            });
+        }
     }
 
     Ok(report)

@@ -130,6 +130,36 @@ pub fn backup_path(path: &Path) -> PathBuf {
     unreachable!()
 }
 
+/// Recursively compare two paths for equal content and structure: files by
+/// bytes, directories by their (name-matched) entries, symlinks by link target.
+/// Returns `false` if either is missing or their types differ.
+pub fn trees_equal(a: &Path, b: &Path) -> bool {
+    let (ma, mb) = match (fs::symlink_metadata(a), fs::symlink_metadata(b)) {
+        (Ok(x), Ok(y)) => (x, y),
+        _ => return false,
+    };
+    let (ta, tb) = (ma.file_type(), mb.file_type());
+    if ta.is_symlink() || tb.is_symlink() {
+        ta.is_symlink() && tb.is_symlink() && fs::read_link(a).ok() == fs::read_link(b).ok()
+    } else if ta.is_dir() && tb.is_dir() {
+        let entries = |p: &Path| -> Option<Vec<std::ffi::OsString>> {
+            let mut v: Vec<_> = fs::read_dir(p).ok()?.flatten().map(|e| e.file_name()).collect();
+            v.sort();
+            Some(v)
+        };
+        match (entries(a), entries(b)) {
+            (Some(ea), Some(eb)) if ea == eb => {
+                ea.iter().all(|n| trees_equal(&a.join(n), &b.join(n)))
+            }
+            _ => false,
+        }
+    } else if ta.is_file() && tb.is_file() {
+        files_equal(a, b)
+    } else {
+        false
+    }
+}
+
 /// Byte-compare two regular files. Returns `false` if either isn't a readable
 /// regular file, or if their contents differ.
 pub fn files_equal(a: &Path, b: &Path) -> bool {

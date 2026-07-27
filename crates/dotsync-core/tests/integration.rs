@@ -475,6 +475,61 @@ fn divergence_with_adopt_policy_backs_up_and_links() {
 }
 
 #[test]
+fn trees_equal_compares_directories() {
+    let (_d, cfg) = sandbox();
+    let a = cfg.home.join("a");
+    let b = cfg.home.join("b");
+    write(&a.join("x/f"), "same");
+    write(&b.join("x/f"), "same");
+    assert!(fsutil::trees_equal(&a, &b), "identical trees are equal");
+    fs::write(b.join("x/f"), "different").unwrap();
+    assert!(!fsutil::trees_equal(&a, &b), "differing content is not equal");
+    let c = cfg.home.join("c");
+    write(&c, "same");
+    assert!(!fsutil::trees_equal(&a, &c), "a dir and a file are not equal");
+}
+
+#[test]
+fn identical_directory_reconciles_instead_of_conflicting() {
+    // Bringing a second machine into the fold: an identical local directory and
+    // an existing cloud copy should relink, not report a conflict.
+    let (_d, cfg) = sandbox();
+    let dir = cfg.home.join(".config/app");
+    write(&dir.join("a.conf"), "aaa");
+    write(&dir.join("sub/b.conf"), "bbb");
+    let (mapping, _) = apply::adopt(&cfg, &dir, None, None, &[], false).unwrap();
+    assert!(fsutil::is_symlink(&dir));
+
+    // A real, identical directory where the symlink was (the "other machine").
+    let source = mapping.source(&cfg.sync_dir);
+    fsutil::remove_symlink(&dir).unwrap();
+    fsutil::copy_recursive(&source, &dir).unwrap();
+
+    // Identical directories are Healable, not Diverged...
+    let item = state_of(&mapping, &cfg, "mac");
+    assert_eq!(item.state, State::Healable);
+    // ...and re-adopting relinks instead of bailing "already exists … differs".
+    let (_m, out) = apply::adopt(&cfg, &dir, None, None, &[], false).unwrap();
+    assert!(out.ok);
+    assert_eq!(out.action, "relinked");
+    assert!(fsutil::is_symlink(&dir));
+}
+
+#[test]
+fn doctor_fix_removes_orphan_symlink_keeping_cloud() {
+    let (_d, cfg) = sandbox();
+    let target = cfg.home.join(".gitconfig");
+    write(&target, "[user]\n");
+    apply::adopt(&cfg, &target, None, None, &[], false).unwrap();
+    let source = cfg.sync_dir.join(".gitconfig");
+    // No mapping references it (removed on another machine) → orphan; --fix clears it.
+    let report = doctor::run(&cfg, &MappingsFile::default(), "mac", true).unwrap();
+    assert!(report.fixed.iter().any(|o| o.action == "unlinked-orphan"));
+    assert!(!fsutil::is_symlink(&target), "orphan symlink should be removed");
+    assert!(fsutil::path_present(&source), "cloud copy must be kept");
+}
+
+#[test]
 fn mappings_file_round_trips() {
     let (_d, cfg) = sandbox();
     let path = cfg.sync_dir.join(MappingsFile::FILE_NAME);

@@ -111,11 +111,12 @@ pub fn state_of(mapping: &Mapping, cfg: &Config, os: &str) -> Item {
                 State::ForeignSymlink(dest)
             }
         }
-        Ok(meta) => {
+        Ok(_) => {
             // A real file or dir sits at the target.
             if source_present {
-                let both_files = meta.file_type().is_file() && source.is_file();
-                if both_files && fsutil::files_equal(&target, &source) {
+                // Identical content — matching file bytes, or a whole directory
+                // tree — is a healable atomic-save clobber; else a real conflict.
+                if fsutil::trees_equal(&target, &source) {
                     State::Healable
                 } else {
                     State::Diverged

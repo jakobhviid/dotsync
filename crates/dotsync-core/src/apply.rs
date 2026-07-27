@@ -22,7 +22,7 @@ pub struct Outcome {
 }
 
 impl Outcome {
-    fn new(name: &str, action: &str, ok: bool, detail: impl Into<String>) -> Self {
+    pub(crate) fn new(name: &str, action: &str, ok: bool, detail: impl Into<String>) -> Self {
         Outcome {
             name: name.to_string(),
             action: action.to_string(),
@@ -124,10 +124,9 @@ pub fn adopt(
     // If the cloud copy already exists, this path was adopted from another
     // machine. Reconcile rather than clobber.
     if fsutil::path_present(&source) {
-        if abs_target.is_file()
-            && source.is_file()
-            && fsutil::files_equal(abs_target, &source)
-        {
+        // Content matches the existing cloud copy (file bytes or a whole
+        // directory tree) → adopt from another machine: just relink, no clobber.
+        if fsutil::trees_equal(abs_target, &source) {
             if dry_run {
                 return Ok((mapping, Outcome::new(&name, "would-relink", true, "content matches cloud")));
             }
