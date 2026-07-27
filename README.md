@@ -1,0 +1,121 @@
+# dotsync
+
+Sync your user-level config between machines through a **cloud folder** — not git.
+
+dotsync symlinks paths from your `$HOME` into a folder inside Nextcloud (or
+OneDrive, Dropbox, Proton Drive, iCloud, …). The cloud provider already syncs
+that folder across your machines continuously and with no merge ceremony, so
+your editor settings, `~/.claude/` memory, API keys and dotfiles just stay in
+sync. dotsync's job is only to wire the symlinks and stay out of the way.
+
+Why not a git-based dotfile manager? Because for everyday config tweaks you
+don't want to commit, pull, and resolve merges — you want the change to
+propagate the way a synced folder already does. If you run Nextcloud/OneDrive
+anyway, dotsync turns it into a dotfile sync with zero extra services.
+
+```sh
+brew install jakobhviid/tap/dotsync
+# or:
+curl -fsSL https://raw.githubusercontent.com/jakobhviid/dotsync/main/install.sh | sh
+```
+
+## How it works
+
+- Your cloud folder holds a `dotsync/` directory that **mirrors your `$HOME`
+  tree**: `~/.config/zed` lives at `dotsync/.config/zed`, `~/.claude/CLAUDE.md`
+  at `dotsync/.claude/CLAUDE.md`. The mirror layout means the "original
+  location" of everything is self-evident and names never collide.
+- A `dotsync.toml` in that folder lists the mappings. It syncs with everything
+  else, so every machine sees the same list.
+- On each machine, dotsync symlinks the applicable items back into `$HOME`.
+  **Which items are active on a machine is recorded by the symlinks themselves**
+  — there is no per-machine state file to drift.
+
+## Quick start
+
+```sh
+dotsync init                 # auto-finds your cloud folder; sets it up
+dotsync adopt ~/.config/zed  # move zed's config into the cloud, link it back
+dotsync                      # interactive picker: choose what to sync here
+dotsync doctor               # health check (add --fix to repair)
+```
+
+On a second machine: `dotsync init` finds the same cloud folder, then `dotsync`
+lets you tick the items you want on that machine.
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `dotsync init [dir]` | Configure this machine. With no `dir`, auto-discovers a `dotsync` folder across common cloud providers and confirms it. |
+| `dotsync` / `dotsync status` | Show the overview: every mapping and its state on this machine. Bare `dotsync` opens the interactive picker on a terminal. |
+| `dotsync adopt <path> [--mac\|--linux]` | Move an existing `$HOME` file/dir into the cloud folder and symlink it back. `--mac`/`--linux` scopes it to one OS. |
+| `dotsync install [names…] [--all] [--dry-run]` | Link mappings on this machine. No args on a terminal opens the picker; `--all` links everything applicable. |
+| `dotsync uninstall [names…] [--all] [--dry-run]` | Remove dotsync's symlinks here (the cloud copies stay). |
+| `dotsync doctor [--fix]` | Detect atomic-save clobbers, conflicts, dangling/foreign links, secret-mode drift, and cloud conflict copies; `--fix` repairs the safe ones. |
+
+Global flags: `--json` (machine-readable output on every command) and `--llm`
+(print the full guide for an AI agent).
+
+## `dotsync.toml`
+
+```toml
+[[mapping]]
+name = ".config/zed"          # path relative to home; also its path in the cloud folder
+
+[[mapping]]
+name = ".claude/CLAUDE.md"
+
+[[mapping]]
+name = ".config/Code/User"    # same content, different path per OS
+target_mac = "~/Library/Application Support/Code/User"
+target_linux = "~/.config/Code/User"
+
+[[mapping]]
+name = ".ssh/config"
+mode = "0600"                 # enforced on the cloud copy; auto-set for known secrets
+
+[[mapping]]
+name = ".config/linearmouse"
+target_mac = "~/.config/linearmouse"   # mac only (no linux target) → skipped on linux
+```
+
+| Field | Required | Meaning |
+|---|---|---|
+| `name` | yes | Path relative to the home base. Also its location inside the cloud folder. |
+| `target` | no | Explicit `$HOME` path for all OSes. Defaults to `~/<name>`. |
+| `target_mac` / `target_linux` | no | Per-OS path override. Setting only one scopes the mapping to that OS. |
+| `mode` | no | Octal mode enforced on the cloud copy (e.g. `0600`). Auto-set for `.ssh`, `.gnupg`, `.aws`, `*.pem`, … |
+| `on_conflict` | no | `fail` (default) or `adopt` (cloud wins, local backed up to `.bak`). |
+
+## Self-healing
+
+Many apps save atomically — they write a temp file and rename it over your
+config, which silently **replaces the symlink with a real file** and stops the
+syncing. dotsync notices: if the new file's content still matches the cloud
+copy, `install`/`doctor --fix` just relinks it. If it genuinely diverged, that's
+a conflict you resolve (or set `on_conflict = "adopt"`). Prefer mapping whole
+directories where you can — an atomic save *inside* a symlinked dir replaces a
+file within it, not the dir link, so it can't break.
+
+## Secrets
+
+Putting API keys and `.ssh/config` in a trusted cloud is a deliberate, supported
+choice — but two things matter:
+
+- **Nothing ever reaches git.** dotsync only moves files into your cloud folder;
+  it never commits anything, and it refuses to use a sync folder that lives
+  inside a git repository.
+- **Modes are enforced.** Cloud clients often write files `0644`; dotsync tags
+  known-secret paths with a restrictive `mode` and re-asserts it on `install` and
+  `doctor --fix`. Adopt individual secret files (`dotsync adopt ~/.ssh/config`)
+  rather than whole secret directories.
+
+## AI disclosure
+
+Parts of this codebase were written with the assistance of AI coding agents. All
+changes were reviewed by the maintainer.
+
+## License
+
+MIT.

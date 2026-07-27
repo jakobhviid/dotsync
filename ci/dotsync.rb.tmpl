@@ -1,0 +1,49 @@
+class Dotsync < Formula
+  desc "Sync user-level config between machines through a cloud folder, using symlinks"
+  homepage "https://github.com/jakobhviid/dotsync"
+  version "@VERSION@"
+  license "MIT"
+
+  # Prebuilt bottles so `brew install` pours (no C compiler / Xcode gate):
+  # macOS on both arches, plus x86_64 Linux. Anything without a matching bottle
+  # — e.g. a macOS older than the build runner, or arm64 Linux — falls back to
+  # the url+install path below.
+  bottle do
+    root_url "https://github.com/jakobhviid/dotsync/releases/download/v@VERSION@"
+    sha256 cellar: :any_skip_relocation, arm64_@MAC_CODENAME@: "@MAC_ARM_BOTTLE_SHA@"
+    sha256 cellar: :any_skip_relocation, @MAC_CODENAME@: "@MAC_X86_BOTTLE_SHA@"
+    sha256 cellar: :any_skip_relocation, x86_64_linux: "@BOTTLE_SHA@"
+  end
+
+  on_macos do
+    on_intel do
+      url "https://github.com/jakobhviid/dotsync/releases/download/v@VERSION@/dotsync-x86_64-apple-darwin.tar.gz"
+      sha256 "@MAC_X86_SHA@"
+    end
+    on_arm do
+      url "https://github.com/jakobhviid/dotsync/releases/download/v@VERSION@/dotsync-aarch64-apple-darwin.tar.gz"
+      sha256 "@MAC_ARM_SHA@"
+    end
+  end
+
+  on_linux do
+    on_intel do
+      url "https://github.com/jakobhviid/dotsync/releases/download/v@VERSION@/dotsync-x86_64-unknown-linux-musl.tar.gz"
+      sha256 "@X86_SHA@"
+    end
+    on_arm do
+      url "https://github.com/jakobhviid/dotsync/releases/download/v@VERSION@/dotsync-aarch64-unknown-linux-musl.tar.gz"
+      sha256 "@ARM_SHA@"
+    end
+  end
+
+  def install
+    bin.install "dotsync"
+    generate_completions_from_executable(bin/"dotsync", "completions")
+    (man1/"dotsync.1").write Utils.safe_popen_read(bin/"dotsync", "man")
+  end
+
+  test do
+    assert_match "dotsync", shell_output("#{bin}/dotsync --help")
+  end
+end
