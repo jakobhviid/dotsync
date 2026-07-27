@@ -175,7 +175,13 @@ impl MappingsFile {
         }
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("could not read {}", path.display()))?;
-        toml::from_str(&text).with_context(|| format!("invalid TOML in {}", path.display()))
+        let mut file: MappingsFile =
+            toml::from_str(&text).with_context(|| format!("invalid TOML in {}", path.display()))?;
+        // Guard against a hand-merged conflicted copy with duplicate names: keep
+        // the first of each so nothing is planned or acted on twice.
+        let mut seen = std::collections::HashSet::new();
+        file.mappings.retain(|m| seen.insert(m.name.clone()));
+        Ok(file)
     }
 
     /// Serialize back to disk with a documenting header, sorted by name.

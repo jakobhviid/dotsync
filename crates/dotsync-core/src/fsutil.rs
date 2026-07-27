@@ -94,11 +94,13 @@ pub fn copy_recursive(src: &Path, dst: &Path) -> Result<()> {
     } else if ft.is_dir() {
         fs::create_dir_all(dst)
             .with_context(|| format!("could not create {}", dst.display()))?;
-        fs::set_permissions(dst, meta.permissions()).ok(); // mirror source mode
         for entry in fs::read_dir(src)? {
             let entry = entry?;
             copy_recursive(&entry.path(), &dst.join(entry.file_name()))?;
         }
+        // Mirror the source mode *after* writing children, so a read-only source
+        // dir (e.g. 0500) doesn't make its own children un-writable mid-copy.
+        fs::set_permissions(dst, meta.permissions()).ok();
     } else {
         if let Some(parent) = dst.parent() {
             fs::create_dir_all(parent)?;

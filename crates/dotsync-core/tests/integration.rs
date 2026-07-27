@@ -530,6 +530,40 @@ fn doctor_fix_removes_orphan_symlink_keeping_cloud() {
 }
 
 #[test]
+fn copy_recursive_handles_read_only_source_dir() {
+    use std::os::unix::fs::PermissionsExt;
+    let (_d, cfg) = sandbox();
+    let src = cfg.home.join("ro");
+    write(&src.join("f.txt"), "content");
+    fs::set_permissions(&src, fs::Permissions::from_mode(0o500)).unwrap(); // read-only dir
+
+    let dst = cfg.sync_dir.join("ro-copy");
+    let r = fsutil::copy_recursive(&src, &dst);
+
+    // Restore perms so the temp dir can be cleaned up regardless of the result.
+    fs::set_permissions(&src, fs::Permissions::from_mode(0o700)).ok();
+    fs::set_permissions(&dst, fs::Permissions::from_mode(0o700)).ok();
+
+    assert!(r.is_ok(), "copying a read-only source dir should succeed: {r:?}");
+    assert_eq!(fs::read_to_string(dst.join("f.txt")).unwrap(), "content");
+}
+
+#[test]
+fn load_dedups_mappings_by_name() {
+    let (_d, cfg) = sandbox();
+    let path = cfg.sync_dir.join(MappingsFile::FILE_NAME);
+    // A hand-merged conflicted copy could list the same mapping twice.
+    fs::write(
+        &path,
+        "[[mapping]]\nname = \".zshrc\"\ngroup = \"a\"\n\n[[mapping]]\nname = \".zshrc\"\ngroup = \"b\"\n",
+    )
+    .unwrap();
+    let f = MappingsFile::load(&path).unwrap();
+    assert_eq!(f.mappings.len(), 1, "duplicate names should be deduped on load");
+    assert_eq!(f.mappings[0].group.as_deref(), Some("a"), "first occurrence wins");
+}
+
+#[test]
 fn mappings_file_round_trips() {
     let (_d, cfg) = sandbox();
     let path = cfg.sync_dir.join(MappingsFile::FILE_NAME);

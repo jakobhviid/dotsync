@@ -372,7 +372,16 @@ fn provision(
     config::save(&cfg)?;
     let completion_note = install_completions(shell);
 
-    if !json {
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "configured": true,
+                "sync_dir": collapse_tilde(&sync_dir, &home),
+                "home": home.display().to_string(),
+            }))?
+        );
+    } else {
         ui::ok("configured dotsync");
         ui::info(&format!("sync folder : {}", collapse_tilde(&sync_dir, &home)));
         ui::info(&format!("home base   : {}", home.display()));
@@ -769,19 +778,24 @@ fn cmd_group_remove(name: &str, dry_run: bool, yes: bool, json: bool) -> Result<
     if members.is_empty() {
         bail!("no group named {name:?}");
     }
+    // Only members actually linked here get restored; all get removed from config.
+    let local = members
+        .iter()
+        .filter(|i| matches!(i.state, State::Linked | State::DanglingSelf))
+        .count();
 
     if !dry_run && !yes {
         if json || !interactive() {
             bail!(
-                "removing group {name:?} restores {n} file(s) here and removes them from \
-                 dotsync.toml on ALL machines — pass --yes to confirm",
-                n = members.len()
+                "removing group {name:?} restores {local} file(s) here and removes {total} \
+                 mapping(s) from dotsync.toml on ALL machines — pass --yes to confirm",
+                total = members.len()
             );
         }
         let ok = Confirm::with_theme(&ColorfulTheme::default())
             .with_prompt(format!(
-                "Remove group '{name}'? Restores {} file(s) here (cloud copies kept) and removes \
-                 them from dotsync.toml on ALL machines.",
+                "Remove group '{name}'? Restores {local} file(s) to $HOME here (cloud copies kept) \
+                 and removes {} mapping(s) from dotsync.toml on ALL machines.",
                 members.len()
             ))
             .default(false)
@@ -1025,7 +1039,7 @@ fn cmd_doctor(fix: bool, json: bool) -> Result<ExitCode> {
 fn doctor_hint(cfg: &Config, mappings: &MappingsFile) {
     let items = plan(mappings, cfg, current_os());
     if items.iter().any(|i| i.state.is_problem()) {
-        println!("\n{}", ui::dim("Some items need attention — run `dotsync doctor`."));
+        println!("\n{}", ui::dim("Other items need attention — run `dotsync doctor`."));
     }
 }
 
@@ -1052,7 +1066,9 @@ fn report_outcomes(outcomes: &[Outcome], home: &Path, json: bool) {
         if out.ok {
             ui::ok(&line);
         } else {
-            ui::err(&line);
+            // Keep the itemized report on one stream (stdout) so a captured/piped
+            // report shows which items failed, not just the successes.
+            println!("{} {}", ui::red("✗"), line);
         }
     }
     // Summary when more than one thing happened.

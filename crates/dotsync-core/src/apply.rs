@@ -152,7 +152,7 @@ pub fn adopt(
         fsutil::enforce_secret_tree(&source)?;
     }
     fsutil::make_symlink(&source, abs_target)?;
-    Ok((mapping, Outcome::new(&name, "adopted", true, format!("→ {}", source.display()))))
+    Ok((mapping, Outcome::new(&name, "adopted", true, source.display().to_string())))
 }
 
 /// Make one item linked on this machine, according to its state and conflict

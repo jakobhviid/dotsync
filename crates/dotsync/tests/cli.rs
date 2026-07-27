@@ -206,6 +206,29 @@ fn unadopt_without_yes_refuses() {
 }
 
 #[test]
+fn setup_json_emits_config() {
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    let xdg = d.path().join("xdg");
+    let sync = d.path().join("cloud/dotsync");
+    for p in [&home, &xdg, &sync] {
+        std::fs::create_dir_all(p).unwrap();
+    }
+    let out = Command::cargo_bin("dotsync")
+        .unwrap()
+        .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", &xdg)
+        .args(["setup", sync.to_str().unwrap(), "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(v["configured"], serde_json::json!(true), "setup --json must emit a config doc");
+}
+
+#[test]
 fn group_remove_dry_run_changes_nothing() {
     let (_d, home, xdg, sync) = configured(&[(".config/zed/settings.json", "zed")]);
     dotsync(&home, &xdg)
