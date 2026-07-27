@@ -53,7 +53,7 @@ pub fn config_path() -> Result<PathBuf> {
     Ok(config_root()?.join("dotsync").join("config.toml"))
 }
 
-/// Load config, or `None` if this machine has never run `dotsync init`.
+/// Load config, or `None` if this machine has never run `dotsync setup`.
 pub fn load() -> Result<Option<Config>> {
     let path = config_path()?;
     if !path.exists() {
@@ -80,7 +80,7 @@ pub fn load() -> Result<Option<Config>> {
 /// Load config or fail with an actionable message.
 pub fn require() -> Result<Config> {
     load()?.ok_or_else(|| {
-        anyhow!("dotsync is not configured on this machine — run `dotsync init` first")
+        anyhow!("dotsync is not configured on this machine — run `dotsync setup` first")
     })
 }
 

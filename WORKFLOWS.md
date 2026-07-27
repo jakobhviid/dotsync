@@ -168,8 +168,10 @@ dotsync doctor --fix    # relink atomic-save clobbers, re-assert secret modes
 
 `doctor` flags: atomic-save clobbers (a real file where a symlink should be),
 true conflicts (local differs from cloud), dangling links (cloud copy not
-downloaded yet), foreign symlinks, secret-mode drift, cloud "conflicted copy"
-files, and cross-machine drift — an orphan symlink pointing into the cloud folder
+downloaded yet), foreign symlinks, secret-mode drift, a secret or the sync folder
+**inside a git repository** (an error — git could commit it), a world-readable
+sync folder holding secrets, cloud "conflicted copy" files, and cross-machine
+drift — an orphan symlink pointing into the cloud folder
 whose mapping was removed on another machine, or a group you use here that gained
 members you haven't linked. `--fix` repairs only the safe cases (relink when
 content matches; chmod secrets back to their mode; **clear orphan symlinks**,
@@ -203,6 +205,43 @@ To stop syncing a *single* mapping everywhere, `dotsync unadopt <name>` — the
 same safe copy-then-swap restore and all-machines `dotsync.toml` removal as
 `group remove`, scoped to one (or several) mappings, with the same
 confirm/`--yes`/`--dry-run` guardrails.
+
+## Exit codes
+
+`0` = success. Non-zero = at least one problem or failed item:
+
+- `install` / `uninstall` / `adopt` / `unadopt` / `group remove` exit non-zero if
+  any selected item failed (e.g. an `install` that hit a conflict) — the healthy
+  items still applied; the report shows `N ok · M failed`.
+- `doctor` exits non-zero only on an **error-level** problem (a real conflict, or
+  a secret / the sync folder inside a git repo). Warn-level advisories (dangling
+  links, drift, conflicted-copy siblings) keep it `0`.
+- `status`, `config`, and `group list` always exit `0`.
+- A `--dry-run` preview never fails on transient states (dangling / conflict show
+  as `would-skip`).
+
+## JSON output (`--json`)
+
+Every command accepts `--json`. Shapes:
+
+- `status` — `{ sync_dir, home, mappings: [ { name, state, target, source,
+  linked, secret, mode } ] }`.
+- `install` / `uninstall` / `unadopt` / `group remove` — `{ results: [ { name,
+  action, ok, detail } ] }`.
+- `adopt` — `{ group, merged, results: [ … ] }`.
+- `doctor` — `{ healthy, issues: [ { name, level, message, fixable } ], fixed:
+  [ … ] }` (`level` is `warn` or `error`).
+- `group list` — `{ groups: [ { name, members } ] }`; `group rename` — `{ renamed,
+  to, members, merged }`; `group move` — `{ moved, group, created }`.
+- On error, any command prints `{ "error": "…" }` and exits non-zero.
+
+**State codes** (the `state` vocabulary to branch on): `linked` (active here),
+`available` (in the cloud, not linked here), `local-only` (a real file here, not
+in the cloud — an adopt candidate), `healable` (a real file/dir that still
+matches the cloud copy — relinkable), `diverged` (differs from the cloud copy — a
+conflict; shown as "conflict" in human output), `dangling` (symlinked but the
+cloud copy isn't present), `foreign-symlink` (points somewhere other than the
+cloud copy), `missing`, `skipped` (not for this OS).
 
 ## Invariants
 

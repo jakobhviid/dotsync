@@ -1105,11 +1105,23 @@ fn llm_guide() -> String {
         if sub.is_hide_set() {
             continue;
         }
+        let subname = sub.get_name().to_string();
         out.push_str(&format!(
-            "\n\n-------------------------------- dotsync {} --------------------------------\n\n",
-            sub.get_name()
+            "\n\n-------------------------------- dotsync {subname} --------------------------------\n\n"
         ));
         out.push_str(&sub.render_long_help().to_string());
+        // Recurse one level so nested verbs (e.g. `group remove`) show their full
+        // argument signatures, not just a one-line summary.
+        for nested in sub.get_subcommands_mut() {
+            if nested.is_hide_set() {
+                continue;
+            }
+            let nname = nested.get_name().to_string();
+            out.push_str(&format!(
+                "\n\n----------------- dotsync {subname} {nname} -----------------\n\n"
+            ));
+            out.push_str(&nested.render_long_help().to_string());
+        }
     }
     out.push_str("\n\n================================ WORKFLOWS ================================\n\n");
     out.push_str(include_str!("../../../WORKFLOWS.md"));
