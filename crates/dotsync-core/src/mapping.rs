@@ -220,3 +220,15 @@ pub fn expand_tilde(path: &str, home: &Path) -> PathBuf {
         PathBuf::from(path)
     }
 }
+
+/// Inverse of [`expand_tilde`]: render `path` as `~/…` when it lives under
+/// `home`, so stored/displayed paths stay short and portable.
+pub fn collapse_tilde(path: &Path, home: &Path) -> String {
+    if path == home {
+        "~".to_string()
+    } else if let Ok(rel) = path.strip_prefix(home) {
+        format!("~/{}", rel.to_string_lossy())
+    } else {
+        path.to_string_lossy().into_owned()
+    }
+}

@@ -3,22 +3,27 @@
 //! This is the thin CLI layer; all logic lives in `dotsync-core`. Each command
 //! resolves config, calls into core, and renders the result as either a human
 //! summary or (`--json`) a machine-readable document.
+//!
+//! Config is lazy: the first time a command needs a sync folder and none is
+//! configured, dotsync auto-discovers candidates and asks (on a terminal), then
+//! persists and continues — so `setup` is rarely needed explicitly.
 
 mod completions;
 mod picker;
 
 use std::io::IsTerminal;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
+use dialoguer::{theme::ColorfulTheme, Confirm, Input, Select};
 use serde_json::json;
 
 use dotsync_core::apply::{self, Outcome};
 use dotsync_core::config::{self, Config};
-use dotsync_core::mapping::{current_os, MappingsFile};
+use dotsync_core::mapping::{collapse_tilde, current_os, expand_tilde, MappingsFile};
 use dotsync_core::plan::{plan, Item, State};
 use dotsync_core::{discovery, doctor, overview, ui};
 
@@ -46,14 +51,22 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Configure this machine: set the cloud sync folder and home base.
-    Init {
+    /// Provision this machine: pick the cloud folder and install completions.
+    ///
+    /// Usually unnecessary — running any command on a fresh machine offers this
+    /// automatically. Use it to re-point the sync folder or reinstall completions.
+    Setup {
         /// The dotsync folder inside your cloud provider. Omit to auto-discover.
         dir: Option<PathBuf>,
         /// The home base targets are relative to (default: $HOME).
         #[arg(long)]
         home: Option<PathBuf>,
+        /// Shell to install completions for (default: detected from $SHELL).
+        #[arg(long)]
+        shell: Option<Shell>,
     },
+    /// Show the resolved per-machine configuration.
+    Config,
     /// Show every mapping and its state on this machine.
     Status,
     /// Move an existing $HOME path into the cloud folder and symlink it back.
@@ -137,7 +150,10 @@ fn run(cli: &Cli) -> Result<ExitCode> {
             completions::print_man()?;
             Ok(ExitCode::SUCCESS)
         }
-        Some(Cmd::Init { dir, home }) => cmd_init(dir.clone(), home.clone(), cli.json),
+        Some(Cmd::Setup { dir, home, shell }) => {
+            provision(dir.clone(), home.clone(), *shell, cli.json).map(|_| ExitCode::SUCCESS)
+        }
+        Some(Cmd::Config) => cmd_config(cli.json),
         Some(Cmd::Adopt { path, mac, linux }) => cmd_adopt(path, *mac, *linux, cli.json),
         Some(Cmd::Status) => cmd_status(cli.json),
         Some(Cmd::Install {
@@ -155,19 +171,36 @@ fn run(cli: &Cli) -> Result<ExitCode> {
     }
 }
 
-/// Load per-machine config and the shared mappings file together.
-fn load_ctx() -> Result<(Config, MappingsFile)> {
-    let cfg = config::require()?;
+/// Whether we can prompt (both stdin and stdout are a terminal).
+fn interactive() -> bool {
+    std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
+}
+
+/// Get the machine's config, auto-provisioning on first interactive use.
+fn ensure_config(json: bool) -> Result<Config> {
+    if let Some(cfg) = config::load()? {
+        return Ok(cfg);
+    }
+    if json || !interactive() {
+        bail!("dotsync is not configured on this machine — run `dotsync setup`");
+    }
+    ui::info("No dotsync folder configured yet — let's find it.");
+    provision(None, None, None, json)
+}
+
+/// Load config (auto-provisioning if needed) and the shared mappings file.
+fn load_ctx(json: bool) -> Result<(Config, MappingsFile)> {
+    let cfg = ensure_config(json)?;
     let mappings = MappingsFile::load(&cfg.sync_dir.join(MappingsFile::FILE_NAME))?;
     Ok((cfg, mappings))
 }
 
 fn cmd_default(json: bool) -> Result<ExitCode> {
     // Bare `dotsync`: picker on a terminal, status otherwise.
-    let (cfg, mappings) = load_ctx()?;
+    let (cfg, mappings) = load_ctx(json)?;
     let items = plan(&mappings, &cfg, current_os());
-    if json || !std::io::stdout().is_terminal() || !std::io::stdin().is_terminal() {
-        return cmd_status(json);
+    if json || !interactive() {
+        return render_status(&items, &cfg, json);
     }
     overview::render(&items, &cfg);
     let outcomes = picker::run(&items)?;
@@ -177,37 +210,90 @@ fn cmd_default(json: bool) -> Result<ExitCode> {
 }
 
 fn cmd_status(json: bool) -> Result<ExitCode> {
-    let (cfg, mappings) = load_ctx()?;
+    let (cfg, mappings) = load_ctx(json)?;
     let items = plan(&mappings, &cfg, current_os());
+    render_status(&items, &cfg, json)
+}
+
+fn render_status(items: &[Item], cfg: &Config, json: bool) -> Result<ExitCode> {
     if json {
-        println!("{}", serde_json::to_string_pretty(&overview::to_json(&items, &cfg))?);
+        println!("{}", serde_json::to_string_pretty(&overview::to_json(items, cfg))?);
     } else {
-        overview::render(&items, &cfg);
+        overview::render(items, cfg);
     }
     Ok(ExitCode::SUCCESS)
 }
 
-fn cmd_init(dir: Option<PathBuf>, home: Option<PathBuf>, json: bool) -> Result<ExitCode> {
-    let home = match home {
-        Some(h) => h,
-        None => config::home_dir()?,
-    };
-
-    let sync_dir = match dir {
-        Some(d) => {
-            if !d.exists() {
-                std::fs::create_dir_all(&d)
-                    .with_context(|| format!("could not create {}", d.display()))?;
+fn cmd_config(json: bool) -> Result<ExitCode> {
+    match config::load()? {
+        Some(cfg) => {
+            let mappings = MappingsFile::load(&cfg.sync_dir.join(MappingsFile::FILE_NAME))?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json!({
+                        "configured": true,
+                        "sync_dir": cfg.sync_dir.display().to_string(),
+                        "home": cfg.home.display().to_string(),
+                        "config": config::config_path()?.display().to_string(),
+                        "mappings": mappings.mappings.len(),
+                    }))?
+                );
+            } else {
+                ui::info(&format!("sync folder : {}", cfg.sync_dir.display()));
+                ui::info(&format!("home base   : {}", cfg.home.display()));
+                ui::info(&format!("config      : {}", config::config_path()?.display()));
+                ui::info(&format!("mappings    : {}", mappings.mappings.len()));
             }
-            d
+            Ok(ExitCode::SUCCESS)
         }
-        None => discover_sync_dir(&home, json)?,
-    };
-    let sync_dir = std::fs::canonicalize(&sync_dir).unwrap_or(sync_dir);
+        None => {
+            if json {
+                println!("{}", json!({ "configured": false }));
+            } else {
+                ui::warn("dotsync is not configured on this machine — run `dotsync setup`");
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+    }
+}
 
+/// Provision this machine: choose the sync folder (arg, discovery, or prompt),
+/// create it and `dotsync.toml` if needed, persist config, and install
+/// completions. Shared by `setup` and the lazy first-run path.
+fn provision(
+    dir: Option<PathBuf>,
+    home: Option<PathBuf>,
+    shell: Option<Shell>,
+    json: bool,
+) -> Result<Config> {
+    let home = home.map(Ok).unwrap_or_else(config::home_dir)?;
+    let home = std::fs::canonicalize(&home).unwrap_or(home);
+
+    let chosen = match dir {
+        Some(d) => {
+            // Expand a leading ~ that a quoted arg may have kept literal.
+            expand_tilde(&d.to_string_lossy(), &home)
+        }
+        None => discover_or_prompt(&home, json)?,
+    };
+
+    if !chosen.exists() {
+        if interactive() && !json {
+            let ok = Confirm::with_theme(&ColorfulTheme::default())
+                .with_prompt(format!("{} doesn't exist — create it?", chosen.display()))
+                .default(true)
+                .interact()?;
+            if !ok {
+                bail!("aborted");
+            }
+        }
+        std::fs::create_dir_all(&chosen)
+            .with_context(|| format!("could not create {}", chosen.display()))?;
+    }
+    let sync_dir = std::fs::canonicalize(&chosen).unwrap_or(chosen);
     config::ensure_not_in_git(&sync_dir)?;
 
-    // Create the mappings file if this folder is brand new.
     let mappings_path = sync_dir.join(MappingsFile::FILE_NAME);
     if !mappings_path.exists() {
         MappingsFile::default().save(&mappings_path)?;
@@ -218,82 +304,123 @@ fn cmd_init(dir: Option<PathBuf>, home: Option<PathBuf>, json: bool) -> Result<E
         home: home.clone(),
     };
     config::save(&cfg)?;
+    let completion_note = install_completions(shell);
 
-    let mappings = MappingsFile::load(&mappings_path)?;
-    if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&json!({
-                "sync_dir": sync_dir.display().to_string(),
-                "home": home.display().to_string(),
-                "config": config::config_path()?.display().to_string(),
-                "mappings": mappings.mappings.len(),
-            }))?
-        );
-    } else {
+    if !json {
         ui::ok("configured dotsync");
-        ui::info(&format!("sync folder : {}", sync_dir.display()));
+        ui::info(&format!("sync folder : {}", collapse_tilde(&sync_dir, &home)));
         ui::info(&format!("home base   : {}", home.display()));
-        ui::info(&format!("config      : {}", config::config_path()?.display()));
-        ui::info(&format!("mappings    : {}", mappings.mappings.len()));
-        if mappings.mappings.is_empty() {
-            println!("\nNext: `dotsync adopt <path>` to add your first mapping.");
+        if let Some(note) = &completion_note {
+            ui::info(note);
         } else {
-            println!("\nNext: `dotsync` to pick what to sync onto this machine.");
+            ui::info("completions : run `dotsync completions <shell>` to install");
         }
     }
-    Ok(ExitCode::SUCCESS)
+    Ok(cfg)
 }
 
-/// Discover the cloud sync folder, prompting to choose when several are found.
-fn discover_sync_dir(home: &std::path::Path, json: bool) -> Result<PathBuf> {
+/// Discover candidate cloud folders and (interactively) let the user pick one or
+/// type a path. Non-interactively, use the sole candidate or fail with guidance.
+fn discover_or_prompt(home: &Path, json: bool) -> Result<PathBuf> {
     let candidates = discovery::discover(home);
-    match candidates.len() {
-        0 => bail!(
-            "no cloud dotsync folder found — create one under your cloud provider \
-             (e.g. ~/Nextcloud/dotsync) and run `dotsync init <dir>`"
-        ),
-        1 => {
-            let c = &candidates[0];
-            if !json {
-                ui::info(&format!("found {} dotsync folder: {}", c.provider, c.path.display()));
-            }
-            Ok(c.path.clone())
-        }
-        _ => {
-            if json || !std::io::stdin().is_terminal() {
-                bail!(
-                    "several cloud dotsync folders found — pass one explicitly: {}",
-                    candidates
-                        .iter()
-                        .map(|c| c.path.display().to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                );
-            }
-            let labels: Vec<String> = candidates
-                .iter()
-                .map(|c| {
-                    format!(
-                        "{}  ({}{})",
-                        c.path.display(),
-                        c.provider,
-                        if c.configured { ", configured" } else { "" }
-                    )
-                })
-                .collect();
-            let idx = dialoguer::Select::with_theme(&dialoguer::theme::ColorfulTheme::default())
-                .with_prompt("Which cloud folder should dotsync use?")
-                .items(&labels)
-                .default(0)
-                .interact()?;
-            Ok(candidates[idx].path.clone())
-        }
+
+    if json || !interactive() {
+        return match candidates.len() {
+            1 => Ok(candidates[0].path.clone()),
+            0 => bail!(
+                "no cloud dotsync folder found — pass a path: `dotsync setup <dir>` \
+                 (e.g. ~/Nextcloud/dotsync)"
+            ),
+            _ => bail!(
+                "several cloud dotsync folders found — pass one: {}",
+                candidates
+                    .iter()
+                    .map(|c| c.path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        };
+    }
+
+    let mut labels: Vec<String> = candidates
+        .iter()
+        .map(|c| {
+            format!(
+                "{}  ({}{})",
+                collapse_tilde(&c.path, home),
+                c.provider,
+                if c.configured { ", configured" } else { "" }
+            )
+        })
+        .collect();
+    labels.push("Enter a path manually…".to_string());
+
+    let idx = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("Which cloud folder should dotsync use?")
+        .items(&labels)
+        .default(0)
+        .interact()?;
+
+    if idx < candidates.len() {
+        return Ok(candidates[idx].path.clone());
+    }
+    let input: String = Input::with_theme(&ColorfulTheme::default())
+        .with_prompt("Path to a cloud folder for dotsync")
+        .interact_text()?;
+    Ok(expand_tilde(input.trim(), home))
+}
+
+/// Detect the user's shell from `$SHELL`.
+fn detect_shell() -> Option<Shell> {
+    let sh = std::env::var("SHELL").ok()?;
+    match Path::new(&sh).file_name()?.to_string_lossy().as_ref() {
+        "zsh" => Some(Shell::Zsh),
+        "bash" => Some(Shell::Bash),
+        "fish" => Some(Shell::Fish),
+        _ => None,
     }
 }
 
-fn cmd_adopt(path: &std::path::Path, mac: bool, linux: bool, json: bool) -> Result<ExitCode> {
-    let cfg = config::require()?;
+/// Install a completion script into the shell's standard user location.
+/// Best-effort: returns a human note on success, `None` if it couldn't.
+fn install_completions(shell: Option<Shell>) -> Option<String> {
+    let shell = shell.or_else(detect_shell)?;
+    let home = config::home_dir().ok()?;
+    let xdg_data = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| home.join(".local/share"));
+
+    let (path, extra) = match shell {
+        Shell::Zsh => (
+            xdg_data.join("zsh/site-functions/_dotsync"),
+            Some(format!(
+                "if completions don't show, add to ~/.zshrc: fpath+=({}/zsh/site-functions)",
+                collapse_tilde(&xdg_data, &home)
+            )),
+        ),
+        Shell::Bash => (
+            xdg_data.join("bash-completion/completions/dotsync"),
+            None,
+        ),
+        Shell::Fish => (home.join(".config/fish/completions/dotsync.fish"), None),
+        _ => return None,
+    };
+
+    std::fs::create_dir_all(path.parent()?).ok()?;
+    let mut file = std::fs::File::create(&path).ok()?;
+    let mut cmd = Cli::command();
+    clap_complete::generate(shell, &mut cmd, "dotsync", &mut file);
+
+    let mut note = format!("completions : installed for {} → {}", shell, collapse_tilde(&path, &home));
+    if let Some(extra) = extra {
+        note.push_str(&format!("\n         {}", extra));
+    }
+    Some(note)
+}
+
+fn cmd_adopt(path: &Path, mac: bool, linux: bool, json: bool) -> Result<ExitCode> {
+    let cfg = ensure_config(json)?;
     // Absolute path relative to cwd, without resolving symlinks.
     let abs = std::path::absolute(path)
         .with_context(|| format!("could not resolve {}", path.display()))?;
@@ -345,17 +472,12 @@ fn select_items<'a>(items: &'a [Item], names: &[String], all: bool) -> Result<Ve
 }
 
 fn cmd_install(names: &[String], all: bool, dry_run: bool, json: bool) -> Result<ExitCode> {
-    let (cfg, mappings) = load_ctx()?;
+    let (cfg, mappings) = load_ctx(json)?;
     let items = plan(&mappings, &cfg, current_os());
 
     // No explicit selection on a terminal → interactive picker.
-    let interactive = names.is_empty()
-        && !all
-        && !json
-        && !dry_run
-        && std::io::stdin().is_terminal()
-        && std::io::stdout().is_terminal();
-    if interactive {
+    let use_picker = names.is_empty() && !all && !json && !dry_run && interactive();
+    if use_picker {
         overview::render(&items, &cfg);
         let outcomes = picker::run(&items)?;
         report_outcomes(&outcomes, false);
@@ -376,7 +498,7 @@ fn cmd_install(names: &[String], all: bool, dry_run: bool, json: bool) -> Result
 }
 
 fn cmd_uninstall(names: &[String], all: bool, dry_run: bool, json: bool) -> Result<ExitCode> {
-    let (cfg, mappings) = load_ctx()?;
+    let (cfg, mappings) = load_ctx(json)?;
     let items = plan(&mappings, &cfg, current_os());
     let selected = if all {
         items.iter().collect()
@@ -395,7 +517,7 @@ fn cmd_uninstall(names: &[String], all: bool, dry_run: bool, json: bool) -> Resu
 }
 
 fn cmd_doctor(fix: bool, json: bool) -> Result<ExitCode> {
-    let (cfg, mappings) = load_ctx()?;
+    let (cfg, mappings) = load_ctx(json)?;
     let report = doctor::run(&cfg, &mappings, current_os(), fix)?;
 
     if json {

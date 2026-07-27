@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::mapping::{collapse_tilde, expand_tilde};
+
 /// Resolved per-machine configuration.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -64,12 +66,13 @@ pub fn load() -> Result<Option<Config>> {
     let Some(sync_dir) = file.sync_dir else {
         return Ok(None);
     };
+    // `home` may be stored as `~`; resolve it first, then the sync dir against it.
     let home = match file.home {
-        Some(h) => PathBuf::from(h),
+        Some(h) => expand_tilde(&h, &home_dir()?),
         None => home_dir()?,
     };
     Ok(Some(Config {
-        sync_dir: PathBuf::from(sync_dir),
+        sync_dir: expand_tilde(&sync_dir, &home),
         home,
     }))
 }
@@ -88,9 +91,11 @@ pub fn save(cfg: &Config) -> Result<()> {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("could not create {}", parent.display()))?;
     }
+    // Store paths collapsed to `~/…` where possible, so config.toml stays short.
+    let home_base = home_dir().unwrap_or_else(|_| cfg.home.clone());
     let file = ConfigFile {
-        sync_dir: Some(cfg.sync_dir.to_string_lossy().into_owned()),
-        home: Some(cfg.home.to_string_lossy().into_owned()),
+        sync_dir: Some(collapse_tilde(&cfg.sync_dir, &cfg.home)),
+        home: Some(collapse_tilde(&cfg.home, &home_base)),
     };
     let body = toml::to_string_pretty(&file).context("serializing config")?;
     std::fs::write(&path, body).with_context(|| format!("could not write {}", path.display()))?;

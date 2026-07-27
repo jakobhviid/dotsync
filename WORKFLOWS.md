@@ -15,19 +15,27 @@ Task-oriented guide. Every command accepts `--json` for machine-readable output.
 
 ## First machine
 
+No explicit setup needed — the first command that needs a sync folder discovers
+it, prompts you to pick (or type a path), installs completions, and continues.
+
 ```sh
-dotsync init                 # discovers the cloud folder (or: dotsync init <dir>)
-dotsync adopt ~/.config/zed  # relocate into cloud + symlink back
+dotsync adopt ~/.config/zed  # first run prompts for the cloud folder, then adopts
 dotsync adopt ~/.claude/CLAUDE.md
 dotsync status               # confirm both show "linked"
 ```
 
+To provision non-interactively (scripts, dotfiles bootstrap): `dotsync setup
+~/Nextcloud/dotsync`. Inspect with `dotsync config`.
+
 ## Additional machine
 
 ```sh
-dotsync init                 # finds the same cloud folder (already has dotsync.toml)
-dotsync                      # interactive picker: tick what you want here
+dotsync            # first run finds the same cloud folder, opens the picker
 ```
+
+The picker (a multiselect checklist, pre-checked to what's already linked here)
+lets you tick exactly what you want on this machine. Non-interactively:
+`dotsync install --all` or `dotsync install .config/zed`.
 
 Or non-interactively:
 

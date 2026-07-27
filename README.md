@@ -33,21 +33,27 @@ curl -fsSL https://raw.githubusercontent.com/jakobhviid/dotsync/main/install.sh 
 
 ## Quick start
 
+There is no mandatory setup step. The first time you run dotsync with no config,
+it auto-discovers your cloud folder, lets you pick it (or type a path), installs
+shell completions, and continues:
+
 ```sh
-dotsync init                 # auto-finds your cloud folder; sets it up
+dotsync                      # first run: detect cloud folder → pick → picker opens
 dotsync adopt ~/.config/zed  # move zed's config into the cloud, link it back
-dotsync                      # interactive picker: choose what to sync here
 dotsync doctor               # health check (add --fix to repair)
 ```
 
-On a second machine: `dotsync init` finds the same cloud folder, then `dotsync`
-lets you tick the items you want on that machine.
+On a second machine, the same first run finds the shared cloud folder and lets
+you tick the items you want there. Run `dotsync setup` explicitly only to
+re-point the folder or reinstall completions; `dotsync config` shows what's
+configured.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `dotsync init [dir]` | Configure this machine. With no `dir`, auto-discovers a `dotsync` folder across common cloud providers and confirms it. |
+| `dotsync setup [dir]` | Provision this machine and install completions. Usually unnecessary — the first run of any command offers this automatically. With no `dir`, auto-discovers a `dotsync` folder across common cloud providers (or type your own path). |
+| `dotsync config` | Show the resolved sync folder, home base, and config path. |
 | `dotsync` / `dotsync status` | Show the overview: every mapping and its state on this machine. Bare `dotsync` opens the interactive picker on a terminal. |
 | `dotsync adopt <path> [--mac\|--linux]` | Move an existing `$HOME` file/dir into the cloud folder and symlink it back. `--mac`/`--linux` scopes it to one OS. |
 | `dotsync install [names…] [--all] [--dry-run]` | Link mappings on this machine. No args on a terminal opens the picker; `--all` links everything applicable. |
