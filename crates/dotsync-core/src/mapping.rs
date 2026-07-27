@@ -9,7 +9,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
 /// What to do at link time when the `$HOME` target and the sync copy both exist
@@ -209,6 +209,67 @@ impl MappingsFile {
             self.mappings.push(mapping);
         }
     }
+}
+
+/// Validate a group name. Group names live in a namespace disjoint from mapping
+/// paths (no `/`, no leading `.`) so a selector like `dotsync install claude` is
+/// never ambiguous between a group and a path.
+pub fn validate_group_name(name: &str) -> Result<()> {
+    let n = name.trim();
+    if n.is_empty() {
+        bail!("group name cannot be empty");
+    }
+    if n.contains('/') {
+        bail!("group name cannot contain '/' (that's for paths)");
+    }
+    if n.starts_with('.') {
+        bail!("group name cannot start with '.' (that's for paths)");
+    }
+    Ok(())
+}
+
+/// The deepest shared parent directory of several home-relative paths, if any.
+pub fn common_parent(paths: &[String]) -> Option<String> {
+    if paths.is_empty() {
+        return None;
+    }
+    let parents: Vec<Vec<&str>> = paths
+        .iter()
+        .map(|p| {
+            let mut c: Vec<&str> = p.split('/').collect();
+            c.pop(); // drop the leaf, keep the directory part
+            c
+        })
+        .collect();
+    let mut common = parents[0].clone();
+    for p in &parents[1..] {
+        let mut i = 0;
+        while i < common.len() && i < p.len() && common[i] == p[i] {
+            i += 1;
+        }
+        common.truncate(i);
+    }
+    if common.is_empty() {
+        None
+    } else {
+        Some(common.join("/"))
+    }
+}
+
+/// Suggest a group name from the paths being adopted: the shared parent dir when
+/// several paths cluster, else the single path's leaf — with leading dots and
+/// the extension stripped, lowercased. E.g. [".claude/CLAUDE.md",
+/// ".claude/settings.json"] -> "claude"; ".config/zed" -> "zed".
+pub fn suggest_group_name(paths: &[String]) -> String {
+    let pick = if paths.len() > 1 {
+        common_parent(paths).unwrap_or_else(|| paths[0].clone())
+    } else {
+        paths.first().cloned().unwrap_or_default()
+    };
+    let base = pick.rsplit('/').next().unwrap_or(&pick);
+    let base = base.trim_start_matches('.');
+    let base = base.rsplit_once('.').map(|(a, _)| a).unwrap_or(base);
+    base.to_lowercase()
 }
 
 /// The OS string dotsync uses for the current platform.

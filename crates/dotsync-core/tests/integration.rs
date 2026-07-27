@@ -36,7 +36,7 @@ fn adopt_moves_into_cloud_and_links_back() {
     // Adopt the containing dir.
     let dir = cfg.home.join(".config/zed");
 
-    let (mapping, out) = apply::adopt(&cfg, &dir, None, None, false).unwrap();
+    let (mapping, out) = apply::adopt(&cfg, &dir, None, None, &[], false).unwrap();
     assert!(out.ok);
     assert_eq!(mapping.name, ".config/zed");
 
@@ -58,7 +58,7 @@ fn secret_paths_are_auto_moded() {
     let (_d, cfg) = sandbox();
     let target = cfg.home.join(".ssh/config");
     write(&target, "Host x");
-    let (mapping, _) = apply::adopt(&cfg, &target, None, None, false).unwrap();
+    let (mapping, _) = apply::adopt(&cfg, &target, None, None, &[], false).unwrap();
     assert_eq!(mapping.mode.as_deref(), Some("0600"));
     let mode = fsutil::mode_of(&cfg.sync_dir.join(".ssh/config")).unwrap();
     assert_eq!(mode, 0o600);
@@ -69,7 +69,7 @@ fn atomic_save_clobber_is_healable_and_heals() {
     let (_d, cfg) = sandbox();
     let target = cfg.home.join(".gitconfig");
     write(&target, "[user]\n");
-    let (mapping, _) = apply::adopt(&cfg, &target, None, None, false).unwrap();
+    let (mapping, _) = apply::adopt(&cfg, &target, None, None, &[], false).unwrap();
 
     // Simulate an atomic save: replace the symlink with a real, identical file.
     let source = mapping.source(&cfg.sync_dir);
@@ -89,7 +89,7 @@ fn real_divergence_is_a_conflict_and_fail_policy_refuses() {
     let (_d, cfg) = sandbox();
     let target = cfg.home.join(".gitconfig");
     write(&target, "original");
-    let (mapping, _) = apply::adopt(&cfg, &target, None, None, false).unwrap();
+    let (mapping, _) = apply::adopt(&cfg, &target, None, None, &[], false).unwrap();
 
     // Diverge: local file now differs from the cloud copy.
     fsutil::remove_symlink(&target).unwrap();
@@ -129,13 +129,13 @@ fn adopt_refuses_path_already_inside_sync() {
     let (_d, cfg) = sandbox();
     // Adopt ~/.config as a dir → it becomes a symlink into the cloud.
     write(&cfg.home.join(".config/a.conf"), "a");
-    apply::adopt(&cfg, &cfg.home.join(".config"), None, None, false).unwrap();
+    apply::adopt(&cfg, &cfg.home.join(".config"), None, None, &[], false).unwrap();
 
     // A file now created "in" ~/.config actually lives in the cloud (via the
     // symlink). Adopting it must be refused, not delete the cloud master.
     let inner = cfg.home.join(".config/foo.conf");
     fs::write(&inner, "precious").unwrap();
-    let res = apply::adopt(&cfg, &inner, None, None, false);
+    let res = apply::adopt(&cfg, &inner, None, None, &[], false);
     assert!(res.is_err(), "adopting a path inside the sync folder must be refused");
     assert_eq!(fs::read_to_string(&inner).unwrap(), "precious", "must not be destroyed");
 }
@@ -145,7 +145,7 @@ fn whole_secret_dir_is_tagged_and_moded_recursively() {
     let (_d, cfg) = sandbox();
     // The natural case: adopt the whole ~/.aws directory (no trailing slash).
     write(&cfg.home.join(".aws/credentials"), "key");
-    let (m, _) = apply::adopt(&cfg, &cfg.home.join(".aws"), None, None, false).unwrap();
+    let (m, _) = apply::adopt(&cfg, &cfg.home.join(".aws"), None, None, &[], false).unwrap();
     assert_eq!(m.mode.as_deref(), Some("0700"), "whole secret dir must be tagged");
 
     // Perms are enforced recursively: dir 0700, inner file 0600.
@@ -163,11 +163,53 @@ fn adopt_with_group_tags_and_lists() {
     for name in [".claude/CLAUDE.md", ".claude/settings.json"] {
         let target = cfg.home.join(name);
         write(&target, "x");
-        let (m, _) = apply::adopt(&cfg, &target, None, Some("claude".into()), false).unwrap();
+        let (m, _) = apply::adopt(&cfg, &target, None, Some("claude".into()), &[], false).unwrap();
         assert_eq!(m.group.as_deref(), Some("claude"));
         file.upsert(m);
     }
     assert_eq!(file.groups(), vec!["claude".to_string()]);
+}
+
+#[test]
+fn adopt_refuses_overlapping_mappings() {
+    let (_d, cfg) = sandbox();
+    write(&cfg.home.join(".config/zed/s"), "x");
+    // Existing mapping ".config" → adopting ".config/zed" is already covered.
+    let r = apply::adopt(
+        &cfg,
+        &cfg.home.join(".config/zed"),
+        None,
+        None,
+        &[".config".to_string()],
+        false,
+    );
+    assert!(r.is_err());
+    // Existing ".config/zed" → adopting ".config" would contain it.
+    let r2 = apply::adopt(
+        &cfg,
+        &cfg.home.join(".config"),
+        None,
+        None,
+        &[".config/zed".to_string()],
+        false,
+    );
+    assert!(r2.is_err());
+}
+
+#[test]
+fn group_name_validation_and_suggestion() {
+    use dotsync_core::mapping::{suggest_group_name, validate_group_name};
+    assert!(validate_group_name("Claude Code").is_ok());
+    assert!(validate_group_name(".hidden").is_err()); // path namespace
+    assert!(validate_group_name("a/b").is_err());
+    assert!(validate_group_name("").is_err());
+
+    assert_eq!(suggest_group_name(&[".config/zed".into()]), "zed");
+    assert_eq!(suggest_group_name(&[".gitconfig".into()]), "gitconfig");
+    assert_eq!(
+        suggest_group_name(&[".claude/CLAUDE.md".into(), ".claude/settings.json".into()]),
+        "claude"
+    );
 }
 
 #[test]

@@ -23,7 +23,7 @@ use serde_json::json;
 
 use dotsync_core::apply::{self, Outcome};
 use dotsync_core::config::{self, Config};
-use dotsync_core::mapping::{collapse_tilde, current_os, expand_tilde, MappingsFile};
+use dotsync_core::mapping::{self, collapse_tilde, current_os, expand_tilde, MappingsFile};
 use dotsync_core::plan::{plan, Item, State};
 use dotsync_core::{discovery, doctor, overview, ui};
 
@@ -455,51 +455,91 @@ fn cmd_adopt(
 
     let mappings_path = cfg.sync_dir.join(MappingsFile::FILE_NAME);
     let mut mappings = MappingsFile::load(&mappings_path)?;
+    let existing: Vec<String> = mappings.mappings.iter().map(|m| m.name.clone()).collect();
 
-    // Resolve the group: explicit flag, else an interactive pick on a terminal.
+    // Home-relative names of what we're adopting, for the group suggestion.
+    let rel: Vec<String> = paths
+        .iter()
+        .filter_map(|p| {
+            std::path::absolute(p)
+                .ok()?
+                .strip_prefix(&cfg.home)
+                .ok()
+                .map(|r| r.to_string_lossy().replace('\\', "/"))
+        })
+        .collect();
+    let fallback: Vec<String> = paths.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+    let suggestion = mapping::suggest_group_name(if rel.is_empty() { &fallback } else { &rel });
+
+    // Every mapping belongs to a group. Resolve it: explicit flag, interactive
+    // pick, or (non-interactive) the auto-suggested name.
     let group = match group {
-        Some(g) => Some(g),
-        None if !json && interactive() => choose_group(&mappings)?,
-        None => None,
+        Some(g) => {
+            mapping::validate_group_name(&g)?;
+            g.trim().to_string()
+        }
+        None if !json && interactive() => choose_group(&mappings, &suggestion)?,
+        None => {
+            mapping::validate_group_name(&suggestion)?;
+            suggestion.clone()
+        }
     };
 
     let mut outcomes = Vec::new();
     for path in paths {
         let abs = std::path::absolute(path)
             .with_context(|| format!("could not resolve {}", path.display()))?;
-        let (mapping, outcome) = apply::adopt(&cfg, &abs, os_scope, group.clone(), false)?;
-        mappings.upsert(mapping);
+        let (m, outcome) = apply::adopt(&cfg, &abs, os_scope, Some(group.clone()), &existing, false)?;
+        mappings.upsert(m);
         outcomes.push(outcome);
     }
     mappings.save(&mappings_path)?;
 
-    report_outcomes(&outcomes, &cfg.home, json);
+    if json {
+        let arr: Vec<_> = outcomes.iter().map(outcome_json).collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({ "group": group, "results": arr }))?
+        );
+    } else {
+        report_outcomes(&outcomes, &cfg.home, false);
+        if outcomes.iter().any(|o| o.ok) {
+            ui::info(&format!("group: {}", ui::bold(&group)));
+        }
+    }
     Ok(exit_from(&outcomes))
 }
 
-/// Interactive group picker used by `adopt` when no `--group` was given.
-fn choose_group(mappings: &MappingsFile) -> Result<Option<String>> {
+/// Interactive group picker for `adopt`: pick an existing group or create one
+/// (pre-filled with the suggested name). Groups are mandatory — no "none".
+fn choose_group(mappings: &MappingsFile, suggestion: &str) -> Result<String> {
     let groups = mappings.groups();
-    let mut items = vec!["(no group)".to_string()];
-    items.extend(groups.iter().cloned());
-    items.push("+ New group…".to_string());
 
+    let make_new = |prompt: &str| -> Result<String> {
+        let name: String = Input::with_theme(&ColorfulTheme::default())
+            .with_prompt(prompt)
+            .with_initial_text(suggestion)
+            .interact_text()?;
+        mapping::validate_group_name(&name)?;
+        Ok(name.trim().to_string())
+    };
+
+    if groups.is_empty() {
+        return make_new("Group name");
+    }
+
+    let mut items = groups.clone();
+    items.push("+ New group…".to_string());
     let idx = Select::with_theme(&ColorfulTheme::default())
-        .with_prompt("Add to a group?")
+        .with_prompt("Add to which group?")
         .items(&items)
         .default(0)
         .interact()?;
 
-    if idx == 0 {
-        Ok(None)
-    } else if idx == items.len() - 1 {
-        let name: String = Input::with_theme(&ColorfulTheme::default())
-            .with_prompt("New group name")
-            .interact_text()?;
-        let name = name.trim().to_string();
-        Ok(if name.is_empty() { None } else { Some(name) })
+    if idx < groups.len() {
+        Ok(groups[idx].clone())
     } else {
-        Ok(Some(groups[idx - 1].clone()))
+        make_new("New group name")
     }
 }
 
@@ -510,7 +550,10 @@ fn select_items<'a>(items: &'a [Item], names: &[String], all: bool) -> Result<Ve
             // A name matches either a group (expand to all members) or one mapping.
             let members: Vec<&Item> = items
                 .iter()
-                .filter(|i| i.mapping.group.as_deref() == Some(n.as_str()))
+                .filter(|i| {
+                    i.mapping.group.as_deref() == Some(n.as_str())
+                        && !matches!(i.state, State::Skipped | State::Missing | State::LocalOnly)
+                })
                 .collect();
             if !members.is_empty() {
                 chosen.extend(members);

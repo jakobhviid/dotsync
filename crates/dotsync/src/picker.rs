@@ -79,7 +79,12 @@ pub fn run(items: &[Item], home: &Path) -> Result<Vec<Outcome>> {
         .map(|r| match r {
             Row::Group(name, members) => {
                 let n = linked_count(members);
-                format!("{:<26}  group · {}/{} linked", name, n, members.len())
+                let problems = members.iter().filter(|i| i.state.is_problem()).count();
+                let mut lbl = format!("{:<26}  group · {}/{} linked", name, n, members.len());
+                if problems > 0 {
+                    lbl.push_str(&format!(" · {} need attention", problems));
+                }
+                lbl
             }
             Row::Single(item) => row_label(item, home),
         })
@@ -112,6 +117,12 @@ pub fn run(items: &[Item], home: &Path) -> Result<Vec<Outcome>> {
 
     for (idx, row) in rows.iter().enumerate() {
         let selected = selection.contains(&idx);
+        // Only act on rows the user actually toggled. An untouched row — including
+        // a partially-linked group that defaults unchecked — must never silently
+        // tear down its healthy members.
+        if selected == defaults[idx] {
+            continue;
+        }
         match row {
             Row::Group(_, members) => {
                 for m in members {

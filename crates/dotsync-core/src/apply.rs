@@ -40,6 +40,7 @@ pub fn adopt(
     abs_target: &Path,
     os_scope: Option<&str>,
     group: Option<String>,
+    existing: &[String],
     dry_run: bool,
 ) -> Result<(Mapping, Outcome)> {
     if !fsutil::path_present(abs_target) {
@@ -60,6 +61,20 @@ pub fn adopt(
     }
     let name = rel.to_string_lossy().replace('\\', "/");
     let source = cfg.sync_dir.join(&name);
+
+    // Refuse overlaps: a path that contains, or is contained by, an existing
+    // mapping. (An exact match is a re-adopt/regroup, handled below.)
+    for e in existing {
+        if *e == name {
+            continue;
+        }
+        if name.starts_with(&format!("{e}/")) {
+            bail!("{name} is already covered by mapping {e} — nothing to adopt separately");
+        }
+        if e.starts_with(&format!("{name}/")) {
+            bail!("{name} would contain the existing mapping {e} — adopt specific items, not the whole directory");
+        }
+    }
 
     // Auto-tag a restrictive mode for known-secret paths (dirs 0700, files 0600).
     let mode = if fsutil::looks_secret(&name) {
