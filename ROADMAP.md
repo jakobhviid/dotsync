@@ -6,45 +6,9 @@ and deferred items. If it isn't here, it isn't planned. (No `TODO.md`, no scatte
 
 ## Planned
 
-- **`dotsync merge <path…>` — design locked.** Assists the hard case of bringing a
-  machine that already has its own config into a cloud folder that already holds
-  another machine's copy (today a manual / LLM recipe — WORKFLOWS.md "Migrating a
-  machine …"). The reframe that makes it safe: **dotsync does not become a general
-  content merger.** Naive text/line union corrupts INI/`.gitconfig` and array union
-  is ambiguous — a wrong merge silently loses config. dotsync owns only the provably
-  safe and the fiddly-mechanical parts; the *judgment* stays with a human/agent.
-  - **Precondition:** a path resolving to a `diverged` state — a real local file and
-    a differing cloud copy (whether or not it's already a mapping; like `adopt`, a
-    new one gets a mapping with `--group`). Non-diverged inputs get actionable
-    redirects (`healable` → `install`; `local-only` → `adopt`; `linked` → nothing to
-    merge).
-  - **The only auto-merge — additive JSON.** If *both* sides parse as JSON and their
-    deep object-merge has **no conflicting leaf** (each side only adds keys), take the
-    union. A differing scalar **or array** at the same path is a conflict, never
-    silently merged (arrays are opaque leaves — union semantics are ambiguous).
-    Guarantee: result key-set ⊇ both inputs, no value changed or invented, nothing
-    dropped.
-  - **Safe take-over (reuse existing machinery).** On a safe merge: preview the keys
-    it would add → confirm (or `--yes`) → back up local to `.bak`, write the merged
-    JSON to the cloud copy, symlink local → cloud, upsert the mapping. This is
-    `install --adopt`'s relink mechanic and records the same `Backup` undo action, so
-    `dotsync undo` restores the local `.bak` (the additive cloud superset is kept —
-    nothing lost).
-  - **Everything else → delegate, don't guess.** For a non-JSON file or a JSON
-    scalar/array conflict: report which leaf paths disagree, point at the two real
-    files (local and `<sync>/<name>`), print the finish step (merge into the cloud
-    copy, then `dotsync install <name> --adopt`), and **exit non-zero** (like
-    `git merge` on conflict).
-  - **`--json` (agent-drivable):** `{ path, state, mergeable, kind:
-    "json-additive"|"conflict"|"opaque", added: [key paths], conflicts: [key paths],
-    cloud_path, local_path, next }` — on a conflict the agent gets both paths + the
-    conflict list, drives the merge, then calls `install --adopt`.
-  - **Guardrails:** writes the shared cloud copy (propagates everywhere), so it
-    confirms / needs `--yes` on non-TTY, and `--dry-run` previews without writing.
-  - **Scope v1:** additive-JSON auto-merge + safe take-over + conflict surfacing.
-    *Not* v1: text/line union, INI, or 3-way merges (unsafe to automate — delegated
-    to the human/agent). Build spec-first with adversarial tests on the conflict
-    detector (no silent value change; a differing array is a conflict, not a union).
+Nothing major is queued — the core is complete (adopt / install / uninstall,
+groups, doctor, undo, version-skew). Near-term work is the cleanups below; larger
+ideas that were weighed and set aside are under "Considered and deferred."
 
 ## Known gaps / cleanups
 
@@ -57,6 +21,17 @@ and deferred items. If it isn't here, it isn't planned. (No `TODO.md`, no scatte
 
 ## Considered and deferred
 
+- **`dotsync merge` verb.** Once the headline feature, then set aside: now that
+  `install --adopt` backs the local side up to `.bak` and `dotsync undo` makes that
+  take-over reversible, the scary part of a cross-machine migration (clobbering a
+  machine's config) is already defused. `status` / `doctor` surface the `diverged`
+  state, and `install --adopt` + `undo` are the safe, reversible take-over. The
+  *only* thing a merge verb would uniquely add is additive-JSON auto-union — a narrow
+  convenience an agent does trivially (deep-merge the two files, then
+  `install --adopt`) — which doesn't justify a JSON conflict-detector + command
+  surface. The migration stays the documented WORKFLOWS recipe. Revisit only if
+  auto-union proves a common, painful need. (The full merge design, if ever wanted,
+  is in this file's git history.)
 - **Typed error layer (thiserror + serializable `UserFacing`).** The `tern` sibling
   uses this because its errors cross a D-Bus/GUI boundary and must serialize. dotsync
   has **no such boundary** — its only consumer is `--json`, whose error object is

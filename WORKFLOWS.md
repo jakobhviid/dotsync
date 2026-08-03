@@ -104,6 +104,10 @@ The end state is identical to any other machine — real files replaced by symli
 into the cloud folder — with this machine's local history folded into the shared
 copy rather than lost.
 
+Each take-over step is reversible: `install --adopt` backs the local file up to
+`.bak`, and `dotsync undo` reverts the last `adopt` / `install --adopt` run
+(restoring that `.bak`), so a mistaken take-over is never a dead end.
+
 ## Adopting new config later
 
 ```sh
