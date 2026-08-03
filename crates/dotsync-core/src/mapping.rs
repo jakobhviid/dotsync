@@ -34,8 +34,8 @@ impl OnConflict {
     }
 }
 
-fn is_default_conflict(c: &OnConflict) -> bool {
-    *c == OnConflict::Fail
+fn is_default_conflict(conflict: &OnConflict) -> bool {
+    *conflict == OnConflict::Fail
 }
 
 /// One synced path.
@@ -99,7 +99,7 @@ impl Mapping {
     pub fn os_display(&self) -> String {
         ["mac", "linux"]
             .into_iter()
-            .filter(|o| self.applies_to(o))
+            .filter(|os| self.applies_to(os))
             .collect::<Vec<_>>()
             .join(",")
     }
@@ -118,7 +118,7 @@ impl Mapping {
             _ => self.target.as_deref(),
         };
         match raw {
-            Some(s) => Some(expand_tilde(s, home)),
+            Some(raw_target) => Some(expand_tilde(raw_target, home)),
             None if self.applies_to(os) => Some(home.join(&self.name)),
             None => None,
         }
@@ -131,7 +131,7 @@ impl Mapping {
             "linux" => self.target_linux.as_deref().or(self.target.as_deref()),
             _ => self.target.as_deref(),
         }
-        .map(|s| s.to_string())
+        .map(|target| target.to_string())
         .unwrap_or_else(|| format!("~/{}", self.name))
     }
 
@@ -139,7 +139,7 @@ impl Mapping {
     pub fn mode_bits(&self) -> Option<u32> {
         self.mode
             .as_deref()
-            .and_then(|m| u32::from_str_radix(m.trim_start_matches("0o"), 8).ok())
+            .and_then(|mode| u32::from_str_radix(mode.trim_start_matches("0o"), 8).ok())
     }
 }
 
@@ -191,7 +191,7 @@ impl MappingsFile {
         // Guard against a hand-merged conflicted copy with duplicate names: keep
         // the first of each so nothing is planned or acted on twice.
         let mut seen = std::collections::HashSet::new();
-        file.mappings.retain(|m| seen.insert(m.name.clone()));
+        file.mappings.retain(|mapping| seen.insert(mapping.name.clone()));
         Ok(file)
     }
 
@@ -199,7 +199,7 @@ impl MappingsFile {
     /// the writing tool's version so another machine can detect skew.
     pub fn save(&self, path: &Path) -> Result<()> {
         let mut mappings = self.mappings.clone();
-        mappings.sort_by_key(|m| m.name.clone()); // stable order, by mirror path
+        mappings.sort_by_key(|mapping| mapping.name.clone()); // stable order, by mirror path
         let stamped = MappingsFile {
             dotsync_version: Some(env!("CARGO_PKG_VERSION").to_string()),
             mappings,
@@ -220,20 +220,20 @@ impl MappingsFile {
     }
 
     pub fn find(&self, name: &str) -> Option<&Mapping> {
-        self.mappings.iter().find(|m| m.name == name)
+        self.mappings.iter().find(|mapping| mapping.name == name)
     }
 
     /// Distinct group labels, sorted.
     pub fn groups(&self) -> Vec<String> {
-        let mut g: Vec<String> = self.mappings.iter().filter_map(|m| m.group.clone()).collect();
-        g.sort();
-        g.dedup();
-        g
+        let mut groups: Vec<String> = self.mappings.iter().filter_map(|mapping| mapping.group.clone()).collect();
+        groups.sort();
+        groups.dedup();
+        groups
     }
 
     /// Insert or replace a mapping by name.
     pub fn upsert(&mut self, mapping: Mapping) {
-        if let Some(slot) = self.mappings.iter_mut().find(|m| m.name == mapping.name) {
+        if let Some(slot) = self.mappings.iter_mut().find(|existing| existing.name == mapping.name) {
             *slot = mapping;
         } else {
             self.mappings.push(mapping);
@@ -245,14 +245,14 @@ impl MappingsFile {
 /// paths (no `/`, no leading `.`) so a selector like `dotsync install claude` is
 /// never ambiguous between a group and a path.
 pub fn validate_group_name(name: &str) -> Result<()> {
-    let n = name.trim();
-    if n.is_empty() {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
         bail!("group name cannot be empty");
     }
-    if n.contains('/') {
+    if trimmed.contains('/') {
         bail!("group name cannot contain '/' (that's for paths)");
     }
-    if n.starts_with('.') {
+    if trimmed.starts_with('.') {
         bail!("group name cannot start with '.' (that's for paths)");
     }
     Ok(())
@@ -274,7 +274,7 @@ pub fn ensure_free_of_mapping(name: &str, mappings: &MappingsFile) -> Result<()>
 
 /// Error if `name` (a would-be mapping name) is already used by a group.
 pub fn ensure_free_of_group(name: &str, mappings: &MappingsFile) -> Result<()> {
-    if mappings.groups().iter().any(|g| g == name) {
+    if mappings.groups().iter().any(|group| group == name) {
         bail!("{name:?} is already a group name — a name is either a group or a mapping, not both");
     }
     Ok(())
@@ -287,19 +287,19 @@ pub fn common_parent(paths: &[String]) -> Option<String> {
     }
     let parents: Vec<Vec<&str>> = paths
         .iter()
-        .map(|p| {
-            let mut c: Vec<&str> = p.split('/').collect();
-            c.pop(); // drop the leaf, keep the directory part
-            c
+        .map(|path| {
+            let mut components: Vec<&str> = path.split('/').collect();
+            components.pop(); // drop the leaf, keep the directory part
+            components
         })
         .collect();
     let mut common = parents[0].clone();
-    for p in &parents[1..] {
-        let mut i = 0;
-        while i < common.len() && i < p.len() && common[i] == p[i] {
-            i += 1;
+    for parent in &parents[1..] {
+        let mut shared = 0;
+        while shared < common.len() && shared < parent.len() && common[shared] == parent[shared] {
+            shared += 1;
         }
-        common.truncate(i);
+        common.truncate(shared);
     }
     if common.is_empty() {
         None
@@ -320,7 +320,7 @@ pub fn suggest_group_name(paths: &[String]) -> String {
     };
     let base = pick.rsplit('/').next().unwrap_or(&pick);
     let base = base.trim_start_matches('.');
-    let base = base.rsplit_once('.').map(|(a, _)| a).unwrap_or(base);
+    let base = base.rsplit_once('.').map(|(stem, _)| stem).unwrap_or(base);
     base.to_lowercase()
 }
 
@@ -358,11 +358,11 @@ pub fn collapse_tilde(path: &Path, home: &Path) -> String {
     }
 }
 
-/// Whether dotted-numeric version `a` is strictly greater than `b`, comparing the
-/// first three components numerically (so `1.10.0 > 1.9.0`, unlike a string sort).
+/// Whether dotted-numeric version `left` is strictly greater than `right`, comparing
+/// the first three components numerically (so `1.10.0 > 1.9.0`, unlike a string sort).
 /// Any unparseable component counts as `0`; this only informs the skew *warning*,
 /// so a version it can't read simply never triggers one.
-fn version_gt(a: &str, b: &str) -> bool {
+fn version_gt(left: &str, right: &str) -> bool {
     fn parts(version: &str) -> (u64, u64, u64) {
         let mut components = version.split(['.', '-', '+']).map(|part| part.parse::<u64>().unwrap_or(0));
         (
@@ -371,7 +371,7 @@ fn version_gt(a: &str, b: &str) -> bool {
             components.next().unwrap_or(0),
         )
     }
-    parts(a) > parts(b)
+    parts(left) > parts(right)
 }
 
 #[cfg(test)]

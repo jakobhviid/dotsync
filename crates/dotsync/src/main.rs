@@ -197,7 +197,7 @@ fn main() -> ExitCode {
 
     // `--llm` is a documentation flag like `--help`: works from anywhere, needs
     // no subcommand, so intercept it before clap enforces one.
-    if std::env::args().skip(1).any(|a| a == "--llm") {
+    if std::env::args().skip(1).any(|arg| arg == "--llm") {
         print!("{}", llm_guide());
         return ExitCode::SUCCESS;
     }
@@ -205,12 +205,12 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     match run(&cli) {
         Ok(code) => code,
-        Err(e) => {
-            // `{e:#}` prints the whole anyhow context chain, not just the top line.
+        Err(error) => {
+            // `{error:#}` prints the whole anyhow context chain, not just the top line.
             if cli.json {
-                println!("{}", json!({ "error": format!("{e:#}") }));
+                println!("{}", json!({ "error": format!("{error:#}") }));
             } else {
-                ui::err(&format!("{e:#}"));
+                ui::err(&format!("{error:#}"));
             }
             ExitCode::FAILURE
         }
@@ -396,9 +396,9 @@ fn provision(
     let home = std::fs::canonicalize(&home).unwrap_or(home);
 
     let chosen = match dir {
-        Some(d) => {
+        Some(dir_arg) => {
             // Expand a leading ~ that a quoted arg may have kept literal.
-            expand_tilde(&d.to_string_lossy(), &home)
+            expand_tilde(&dir_arg.to_string_lossy(), &home)
         }
         None => discover_or_prompt(&home, json)?,
     };
@@ -461,7 +461,7 @@ fn discover_or_prompt(home: &Path, json: bool) -> Result<PathBuf> {
     if json || !interactive() {
         // Non-interactively, only auto-pick an already-existing folder; never
         // silently create one.
-        let existing: Vec<_> = candidates.iter().filter(|c| c.exists).collect();
+        let existing: Vec<_> = candidates.iter().filter(|candidate| candidate.exists).collect();
         return match existing.len() {
             1 => Ok(existing[0].path.clone()),
             0 => bail!(
@@ -472,7 +472,7 @@ fn discover_or_prompt(home: &Path, json: bool) -> Result<PathBuf> {
                 "several cloud dotsync folders found — pass one: {}",
                 existing
                     .iter()
-                    .map(|c| c.path.display().to_string())
+                    .map(|candidate| candidate.path.display().to_string())
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
@@ -481,15 +481,15 @@ fn discover_or_prompt(home: &Path, json: bool) -> Result<PathBuf> {
 
     let mut labels: Vec<String> = candidates
         .iter()
-        .map(|c| {
-            let tag = if c.configured {
+        .map(|candidate| {
+            let tag = if candidate.configured {
                 ", configured".to_string()
-            } else if c.exists {
+            } else if candidate.exists {
                 String::new()
             } else {
                 " — create here".to_string()
             };
-            format!("{}  ({}{})", collapse_tilde(&c.path, home), c.provider, tag)
+            format!("{}  ({}{})", collapse_tilde(&candidate.path, home), candidate.provider, tag)
         })
         .collect();
     labels.push("Enter a path manually…".to_string());
@@ -511,8 +511,8 @@ fn discover_or_prompt(home: &Path, json: bool) -> Result<PathBuf> {
 
 /// Detect the user's shell from `$SHELL`.
 fn detect_shell() -> Option<Shell> {
-    let sh = std::env::var("SHELL").ok()?;
-    match Path::new(&sh).file_name()?.to_string_lossy().as_ref() {
+    let shell_path = std::env::var("SHELL").ok()?;
+    match Path::new(&shell_path).file_name()?.to_string_lossy().as_ref() {
         "zsh" => Some(Shell::Zsh),
         "bash" => Some(Shell::Bash),
         "fish" => Some(Shell::Fish),
@@ -527,7 +527,7 @@ fn install_completions(shell: Option<Shell>) -> Option<String> {
     let home = config::home_dir().ok()?;
     let xdg_data = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
-        .filter(|p| !p.as_os_str().is_empty())
+        .filter(|path| !path.as_os_str().is_empty())
         .unwrap_or_else(|| home.join(".local/share"));
 
     let (path, extra) = match shell {
@@ -582,28 +582,28 @@ fn cmd_adopt(
     let mappings_path = cfg.sync_dir.join(MappingsFile::FILE_NAME);
     let mut mappings = MappingsFile::load(&mappings_path)?;
     warn_if_skewed(&mappings);
-    let existing: Vec<String> = mappings.mappings.iter().map(|m| m.name.clone()).collect();
+    let existing: Vec<String> = mappings.mappings.iter().map(|mapping| mapping.name.clone()).collect();
 
     // Home-relative names of what we're adopting, for the group suggestion.
     let rel: Vec<String> = paths
         .iter()
-        .filter_map(|p| {
-            std::path::absolute(p)
+        .filter_map(|path| {
+            std::path::absolute(path)
                 .ok()?
                 .strip_prefix(&cfg.home)
                 .ok()
-                .map(|r| r.to_string_lossy().replace('\\', "/"))
+                .map(|rel| rel.to_string_lossy().replace('\\', "/"))
         })
         .collect();
-    let fallback: Vec<String> = paths.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+    let fallback: Vec<String> = paths.iter().map(|path| path.to_string_lossy().into_owned()).collect();
     let suggestion = mapping::suggest_group_name(if rel.is_empty() { &fallback } else { &rel });
 
     // Every mapping belongs to a group. Resolve it: explicit flag, interactive
     // pick, or (non-interactive) the auto-suggested name.
     let group = match group {
-        Some(g) => {
-            mapping::validate_group_name(&g)?;
-            g.trim().to_string()
+        Some(group_name) => {
+            mapping::validate_group_name(&group_name)?;
+            group_name.trim().to_string()
         }
         None if !json && interactive() => choose_group(&mappings, &suggestion, &rel)?,
         None => {
@@ -625,8 +625,8 @@ fn cmd_adopt(
         // A new mapping's name must not collide with an existing group name.
         let name = apply::mapping_name_for(&cfg, &abs)?;
         mapping::ensure_free_of_group(&name, &mappings)?;
-        let (m, outcome) = apply::adopt(&cfg, &abs, os_scope, Some(group.clone()), &existing, dry_run)?;
-        mappings.upsert(m);
+        let (mapping, outcome) = apply::adopt(&cfg, &abs, os_scope, Some(group.clone()), &existing, dry_run)?;
+        mappings.upsert(mapping);
         outcomes.push(outcome);
     }
     if !dry_run {
@@ -680,20 +680,20 @@ fn choose_group(mappings: &MappingsFile, suggestion: &str, rel: &[String]) -> Re
 
     let mut scored: Vec<(String, usize)> = all
         .iter()
-        .map(|g| {
+        .map(|group| {
             let score = mappings
                 .mappings
                 .iter()
-                .filter(|m| m.group.as_deref() == Some(g.as_str()))
-                .flat_map(|m| rel.iter().map(move |p| shared_dir_depth(&m.name, p)))
+                .filter(|mapping| mapping.group.as_deref() == Some(group.as_str()))
+                .flat_map(|mapping| rel.iter().map(move |path| shared_dir_depth(&mapping.name, path)))
                 .max()
                 .unwrap_or(0);
-            (g.clone(), score)
+            (group.clone(), score)
         })
         .collect();
-    scored.sort_by_key(|(_, s)| std::cmp::Reverse(*s));
-    let best = scored.first().map(|(_, s)| *s).unwrap_or(0);
-    let groups: Vec<String> = scored.into_iter().map(|(g, _)| g).collect();
+    scored.sort_by_key(|(_, score)| std::cmp::Reverse(*score));
+    let best = scored.first().map(|(_, score)| *score).unwrap_or(0);
+    let groups: Vec<String> = scored.into_iter().map(|(group, _)| group).collect();
 
     let mut items = groups.clone();
     items.push("+ New group…".to_string());
@@ -713,16 +713,16 @@ fn choose_group(mappings: &MappingsFile, suggestion: &str, rel: &[String]) -> Re
 }
 
 /// Number of leading *directory* components two home-relative paths share.
-fn shared_dir_depth(a: &str, b: &str) -> usize {
-    fn dirs(s: &str) -> Vec<&str> {
-        let mut c: Vec<&str> = s.split('/').collect();
-        c.pop(); // drop the leaf
-        c
+fn shared_dir_depth(left: &str, right: &str) -> usize {
+    fn dirs(path: &str) -> Vec<&str> {
+        let mut components: Vec<&str> = path.split('/').collect();
+        components.pop(); // drop the leaf
+        components
     }
-    dirs(a)
+    dirs(left)
         .iter()
-        .zip(dirs(b).iter())
-        .take_while(|(x, y)| x == y)
+        .zip(dirs(right).iter())
+        .take_while(|(left_dir, right_dir)| left_dir == right_dir)
         .count()
 }
 
@@ -738,18 +738,18 @@ fn cmd_group(action: &GroupCmd, json: bool) -> Result<ExitCode> {
 fn cmd_group_list(json: bool) -> Result<ExitCode> {
     let (_cfg, mappings) = load_ctx(json)?;
     let groups = mappings.groups();
-    let members_of = |g: &str| -> Vec<String> {
+    let members_of = |group: &str| -> Vec<String> {
         mappings
             .mappings
             .iter()
-            .filter(|m| m.group.as_deref() == Some(g))
-            .map(|m| m.name.clone())
+            .filter(|mapping| mapping.group.as_deref() == Some(group))
+            .map(|mapping| mapping.name.clone())
             .collect()
     };
     if json {
         let arr: Vec<_> = groups
             .iter()
-            .map(|g| json!({ "name": g, "members": members_of(g) }))
+            .map(|group| json!({ "name": group, "members": members_of(group) }))
             .collect();
         println!("{}", serde_json::to_string_pretty(&json!({ "groups": arr }))?);
         return Ok(ExitCode::SUCCESS);
@@ -759,15 +759,15 @@ fn cmd_group_list(json: bool) -> Result<ExitCode> {
         println!("no groups yet — `dotsync adopt <path>` creates one");
         return Ok(ExitCode::SUCCESS);
     }
-    for g in &groups {
-        let members = members_of(g);
+    for group in &groups {
+        let members = members_of(group);
         println!(
             "  {}  {}",
-            ui::bold(g),
+            ui::bold(group),
             ui::dim(&format!("{} member{}", members.len(), plural(members.len())))
         );
-        for m in members {
-            println!("      {}", m);
+        for member in members {
+            println!("      {}", member);
         }
     }
     Ok(ExitCode::SUCCESS)
@@ -781,15 +781,15 @@ fn cmd_group_rename(old: &str, new: &str, json: bool) -> Result<ExitCode> {
     let count = mappings
         .mappings
         .iter()
-        .filter(|m| m.group.as_deref() == Some(old))
+        .filter(|mapping| mapping.group.as_deref() == Some(old))
         .count();
     if count == 0 {
         bail!("no group named {old:?}");
     }
-    let merging = mappings.groups().iter().any(|g| g == new);
-    for m in mappings.mappings.iter_mut() {
-        if m.group.as_deref() == Some(old) {
-            m.group = Some(new.to_string());
+    let merging = mappings.groups().iter().any(|group| group == new);
+    for mapping in mappings.mappings.iter_mut() {
+        if mapping.group.as_deref() == Some(old) {
+            mapping.group = Some(new.to_string());
         }
     }
     mappings.save(&cfg.sync_dir.join(MappingsFile::FILE_NAME))?;
@@ -815,10 +815,10 @@ fn cmd_group_move(path: &str, group: &str, json: bool) -> Result<ExitCode> {
     if mappings.find(path).is_none() {
         bail!("no mapping named {path:?}");
     }
-    let creating = !mappings.groups().iter().any(|g| g == group);
-    for m in mappings.mappings.iter_mut() {
-        if m.name == path {
-            m.group = Some(group.to_string());
+    let creating = !mappings.groups().iter().any(|existing| existing == group);
+    for mapping in mappings.mappings.iter_mut() {
+        if mapping.name == path {
+            mapping.group = Some(group.to_string());
         }
     }
     mappings.save(&cfg.sync_dir.join(MappingsFile::FILE_NAME))?;
@@ -841,7 +841,7 @@ fn cmd_group_remove(name: &str, dry_run: bool, yes: bool, json: bool) -> Result<
     let items = plan(&mappings, &cfg, current_os());
     let members: Vec<&Item> = items
         .iter()
-        .filter(|i| i.mapping.group.as_deref() == Some(name))
+        .filter(|item| item.mapping.group.as_deref() == Some(name))
         .collect();
     if members.is_empty() {
         bail!("no group named {name:?}");
@@ -849,7 +849,7 @@ fn cmd_group_remove(name: &str, dry_run: bool, yes: bool, json: bool) -> Result<
     // Only members actually linked here get restored; all get removed from config.
     let local = members
         .iter()
-        .filter(|i| matches!(i.state, State::Linked | State::DanglingSelf))
+        .filter(|item| matches!(item.state, State::Linked | State::DanglingSelf))
         .count();
 
     if !dry_run && !yes {
@@ -875,15 +875,15 @@ fn cmd_group_remove(name: &str, dry_run: bool, yes: bool, json: bool) -> Result<
 
     let mut outcomes = Vec::new();
     let mut removed: Vec<String> = Vec::new();
-    for it in &members {
-        let out = apply::restore_item(it, dry_run);
+    for member in &members {
+        let out = apply::restore_item(member, dry_run);
         if out.ok {
-            removed.push(it.name().to_string());
+            removed.push(member.name().to_string());
         }
         outcomes.push(out);
     }
     if !dry_run {
-        mappings.mappings.retain(|m| !removed.contains(&m.name));
+        mappings.mappings.retain(|mapping| !removed.contains(&mapping.name));
         mappings.save(&cfg.sync_dir.join(MappingsFile::FILE_NAME))?;
     }
     record_undo("group remove", &outcomes);
@@ -894,28 +894,28 @@ fn cmd_group_remove(name: &str, dry_run: bool, yes: bool, json: bool) -> Result<
 fn select_items<'a>(items: &'a [Item], names: &[String], all: bool) -> Result<Vec<&'a Item>> {
     if !names.is_empty() {
         let mut chosen = Vec::new();
-        for n in names {
+        for name in names {
             // A name matches either a group (expand to all members) or one mapping.
             let members: Vec<&Item> = items
                 .iter()
-                .filter(|i| {
-                    i.mapping.group.as_deref() == Some(n.as_str())
-                        && !matches!(i.state, State::Skipped | State::Missing | State::LocalOnly)
+                .filter(|item| {
+                    item.mapping.group.as_deref() == Some(name.as_str())
+                        && !matches!(item.state, State::Skipped | State::Missing | State::LocalOnly)
                 })
                 .collect();
             if !members.is_empty() {
                 chosen.extend(members);
-            } else if let Some(item) = items.iter().find(|i| i.name() == n) {
+            } else if let Some(item) = items.iter().find(|item| item.name() == name) {
                 chosen.push(item);
             } else {
-                return Err(anyhow!("no mapping or group named {n:?}"));
+                return Err(anyhow!("no mapping or group named {name:?}"));
             }
         }
         Ok(chosen)
     } else if all {
         Ok(items
             .iter()
-            .filter(|i| !matches!(i.state, State::Skipped | State::Missing | State::LocalOnly))
+            .filter(|item| !matches!(item.state, State::Skipped | State::Missing | State::LocalOnly))
             .collect())
     } else {
         Ok(Vec::new())
@@ -928,8 +928,8 @@ fn cmd_install(names: &[String], all: bool, dry_run: bool, adopt: bool, json: bo
     // win, backing the local file up to `<path>.bak`. Applied in-memory only —
     // never persisted to dotsync.toml.
     if adopt {
-        for m in mappings.mappings.iter_mut() {
-            m.on_conflict = mapping::OnConflict::Adopt;
+        for mapping in mappings.mappings.iter_mut() {
+            mapping.on_conflict = mapping::OnConflict::Adopt;
         }
     }
     let items = plan(&mappings, &cfg, current_os());
@@ -950,7 +950,7 @@ fn cmd_install(names: &[String], all: bool, dry_run: bool, adopt: bool, json: bo
     if selected.is_empty() {
         bail!("nothing selected — pass mapping names, --all, or run interactively");
     }
-    let outcomes: Vec<Outcome> = selected.iter().map(|i| apply::link_item(i, dry_run)).collect();
+    let outcomes: Vec<Outcome> = selected.iter().map(|item| apply::link_item(item, dry_run)).collect();
     record_undo("install", &outcomes);
     report_outcomes(&outcomes, &cfg.home, json);
     if !json {
@@ -972,7 +972,7 @@ fn cmd_uninstall(names: &[String], all: bool, dry_run: bool, json: bool) -> Resu
     }
     let outcomes: Vec<Outcome> = selected
         .iter()
-        .map(|i| apply::unlink_item(i, dry_run))
+        .map(|item| apply::unlink_item(item, dry_run))
         .collect();
     report_outcomes(&outcomes, &cfg.home, json);
     Ok(ExitCode::SUCCESS)
@@ -983,10 +983,10 @@ fn cmd_unadopt(names: &[String], dry_run: bool, yes: bool, json: bool) -> Result
     let items = plan(&mappings, &cfg, current_os());
     // Resolve each name to a single mapping (groups go through `group remove`).
     let mut targets: Vec<&Item> = Vec::new();
-    for n in names {
-        match items.iter().find(|i| i.name() == n) {
-            Some(it) => targets.push(it),
-            None => bail!("no mapping named {n:?}"),
+    for name in names {
+        match items.iter().find(|item| item.name() == name) {
+            Some(item) => targets.push(item),
+            None => bail!("no mapping named {name:?}"),
         }
     }
 
@@ -1013,15 +1013,15 @@ fn cmd_unadopt(names: &[String], dry_run: bool, yes: bool, json: bool) -> Result
 
     let mut outcomes = Vec::new();
     let mut removed: Vec<String> = Vec::new();
-    for it in &targets {
-        let out = apply::restore_item(it, dry_run);
+    for item in &targets {
+        let out = apply::restore_item(item, dry_run);
         if out.ok {
-            removed.push(it.name().to_string());
+            removed.push(item.name().to_string());
         }
         outcomes.push(out);
     }
     if !dry_run {
-        mappings.mappings.retain(|m| !removed.contains(&m.name));
+        mappings.mappings.retain(|mapping| !removed.contains(&mapping.name));
         mappings.save(&cfg.sync_dir.join(MappingsFile::FILE_NAME))?;
     }
     record_undo("unadopt", &outcomes);
@@ -1037,12 +1037,12 @@ fn cmd_doctor(fix: bool, json: bool) -> Result<ExitCode> {
         let issues: Vec<_> = report
             .issues
             .iter()
-            .map(|i| {
+            .map(|issue| {
                 json!({
-                    "name": i.name,
-                    "level": match i.level { doctor::Level::Warn => "warn", doctor::Level::Error => "error" },
-                    "message": i.message,
-                    "fixable": i.fixable,
+                    "name": issue.name,
+                    "level": match issue.level { doctor::Level::Warn => "warn", doctor::Level::Error => "error" },
+                    "message": issue.message,
+                    "fixable": issue.fixable,
                 })
             })
             .collect();
@@ -1059,7 +1059,7 @@ fn cmd_doctor(fix: bool, json: bool) -> Result<ExitCode> {
     }
 
     let home_str = cfg.home.to_string_lossy().into_owned();
-    let short = |s: &str| s.replace(&home_str, "~");
+    let short = |text: &str| text.replace(&home_str, "~");
 
     // doctor is a query: its whole report — the fixes it applied included — is the
     // result, so it all goes to stdout (greppable/capturable as one document).
@@ -1132,8 +1132,8 @@ fn record_undo(command: &str, outcomes: &[Outcome]) {
     let Some(dir) = journal::default_dir() else {
         return;
     };
-    if let Err(e) = journal::record(&dir, command, actions) {
-        ui::warn(&format!("could not record undo journal: {e:#}"));
+    if let Err(error) = journal::record(&dir, command, actions) {
+        ui::warn(&format!("could not record undo journal: {error:#}"));
     }
 }
 
@@ -1309,8 +1309,8 @@ fn outcome_json(out: &Outcome) -> serde_json::Value {
     })
 }
 
-fn plural(n: usize) -> &'static str {
-    if n == 1 {
+fn plural(count: usize) -> &'static str {
+    if count == 1 {
         ""
     } else {
         "s"
@@ -1341,9 +1341,9 @@ fn llm_guide() -> String {
             if nested.is_hide_set() {
                 continue;
             }
-            let nname = nested.get_name().to_string();
+            let nested_name = nested.get_name().to_string();
             out.push_str(&format!(
-                "\n\n----------------- dotsync {subname} {nname} -----------------\n\n"
+                "\n\n----------------- dotsync {subname} {nested_name} -----------------\n\n"
             ));
             out.push_str(&nested.render_long_help().to_string());
         }

@@ -17,17 +17,17 @@ use dotsync_core::plan::{Item, State};
 fn actionable(items: &[Item]) -> Vec<&Item> {
     items
         .iter()
-        .filter(|i| !matches!(i.state, State::Skipped | State::Missing | State::LocalOnly))
+        .filter(|item| !matches!(item.state, State::Skipped | State::Missing | State::LocalOnly))
         .collect()
 }
 
 fn row_label(item: &Item, home: &Path) -> String {
-    let (lab, note) = overview::label(item, home);
+    let (state_label, note) = overview::label(item, home);
     let secret = if item.is_secret() { "  secret" } else { "" };
     if note.is_empty() {
-        format!("{:<28}  {}{}", item.name(), lab, secret)
+        format!("{:<28}  {}{}", item.name(), state_label, secret)
     } else {
-        format!("{:<28}  {} — {}{}", item.name(), lab, note, secret)
+        format!("{:<28}  {} — {}{}", item.name(), state_label, note, secret)
     }
 }
 
@@ -41,25 +41,25 @@ enum Row<'a> {
 fn rows<'a>(choices: &[&'a Item]) -> Vec<Row<'a>> {
     let mut groups: Vec<(String, Vec<&Item>)> = Vec::new();
     let mut singles: Vec<&Item> = Vec::new();
-    for &it in choices {
-        match &it.mapping.group {
-            Some(g) => match groups.iter_mut().find(|(n, _)| n == g) {
-                Some((_, members)) => members.push(it),
-                None => groups.push((g.clone(), vec![it])),
+    for &item in choices {
+        match &item.mapping.group {
+            Some(group) => match groups.iter_mut().find(|(name, _)| name == group) {
+                Some((_, members)) => members.push(item),
+                None => groups.push((group.clone(), vec![item])),
             },
-            None => singles.push(it),
+            None => singles.push(item),
         }
     }
     let mut out: Vec<Row> = groups
         .into_iter()
-        .map(|(g, m)| Row::Group(g, m))
+        .map(|(group, members)| Row::Group(group, members))
         .collect();
     out.extend(singles.into_iter().map(Row::Single));
     out
 }
 
 fn linked_count(members: &[&Item]) -> usize {
-    members.iter().filter(|i| i.state.is_linked()).count()
+    members.iter().filter(|item| item.state.is_linked()).count()
 }
 
 /// Run the picker over `items`, returning the outcomes of what was applied.
@@ -76,22 +76,22 @@ pub fn run(items: &[Item], home: &Path) -> Result<Vec<Outcome>> {
     let rows = rows(&choices);
     let labels: Vec<String> = rows
         .iter()
-        .map(|r| match r {
+        .map(|row| match row {
             Row::Group(name, members) => {
-                let n = linked_count(members);
-                let problems = members.iter().filter(|i| i.state.is_problem()).count();
-                let mut lbl = format!("{:<26}  group · {}/{} linked", name, n, members.len());
+                let linked = linked_count(members);
+                let problems = members.iter().filter(|item| item.state.is_problem()).count();
+                let mut label = format!("{:<26}  group · {}/{} linked", name, linked, members.len());
                 if problems > 0 {
-                    lbl.push_str(&format!(" · {} need attention", problems));
+                    label.push_str(&format!(" · {} need attention", problems));
                 }
-                lbl
+                label
             }
             Row::Single(item) => row_label(item, home),
         })
         .collect();
     let defaults: Vec<bool> = rows
         .iter()
-        .map(|r| match r {
+        .map(|row| match row {
             Row::Group(_, members) => linked_count(members) == members.len(),
             Row::Single(item) => item.state == State::Linked,
         })
@@ -125,8 +125,8 @@ pub fn run(items: &[Item], home: &Path) -> Result<Vec<Outcome>> {
         }
         match row {
             Row::Group(_, members) => {
-                for m in members {
-                    apply_to(m, selected);
+                for member in members {
+                    apply_to(member, selected);
                 }
             }
             Row::Single(item) => apply_to(item, selected),

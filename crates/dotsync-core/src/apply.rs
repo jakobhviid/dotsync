@@ -83,15 +83,15 @@ pub fn adopt(
 
     // Refuse overlaps: a path that contains, or is contained by, an existing
     // mapping. (An exact match is a re-adopt/regroup, handled below.)
-    for e in existing {
-        if *e == name {
+    for existing_name in existing {
+        if *existing_name == name {
             continue;
         }
-        if name.starts_with(&format!("{e}/")) {
-            bail!("{name} is already covered by mapping {e} — nothing to adopt separately");
+        if name.starts_with(&format!("{existing_name}/")) {
+            bail!("{name} is already covered by mapping {existing_name} — nothing to adopt separately");
         }
-        if e.starts_with(&format!("{name}/")) {
-            bail!("{name} would contain the existing mapping {e} — adopt specific items, not the whole directory");
+        if existing_name.starts_with(&format!("{name}/")) {
+            bail!("{name} would contain the existing mapping {existing_name} — adopt specific items, not the whole directory");
         }
     }
 
@@ -300,7 +300,7 @@ pub fn link_item(item: &Item, dry_run: bool) -> Outcome {
                 None => outcome,
             }
         }
-        Err(e) => Outcome::new(&name, "error", false, e.to_string()),
+        Err(error) => Outcome::new(&name, "error", false, error.to_string()),
     }
 }
 
@@ -327,7 +327,7 @@ pub fn unlink_item(item: &Item, dry_run: bool) -> Outcome {
             }
             match fsutil::remove_symlink(&target) {
                 Ok(_) => Outcome::new(&name, "unlinked", true, ""),
-                Err(e) => Outcome::new(&name, "error", false, e.to_string()),
+                Err(error) => Outcome::new(&name, "error", false, error.to_string()),
             }
         }
         _ => Outcome::new(&name, "skipped", true, "no dotsync symlink here"),
@@ -353,15 +353,15 @@ pub fn restore_item(item: &Item, dry_run: bool) -> Outcome {
             }
             let tmp = fsutil::temp_sibling(&target);
             let _ = fsutil::remove_path(&tmp);
-            if let Err(e) = fsutil::copy_recursive(&item.source, &tmp) {
+            if let Err(error) = fsutil::copy_recursive(&item.source, &tmp) {
                 let _ = fsutil::remove_path(&tmp);
-                return Outcome::new(&name, "error", false, format!("restore copy failed: {e}"));
+                return Outcome::new(&name, "error", false, format!("restore copy failed: {error}"));
             }
             // Swap only after the copy succeeded: drop the symlink, move the real
             // copy into its place (a same-dir rename).
-            if let Err(e) = fsutil::remove_symlink(&target).and_then(|_| fsutil::move_path(&tmp, &target)) {
+            if let Err(error) = fsutil::remove_symlink(&target).and_then(|_| fsutil::move_path(&tmp, &target)) {
                 let _ = fsutil::remove_path(&tmp);
-                return Outcome::new(&name, "error", false, e.to_string());
+                return Outcome::new(&name, "error", false, error.to_string());
             }
             let undo = UndoAction::Restore {
                 name: name.clone(),
@@ -377,7 +377,7 @@ pub fn restore_item(item: &Item, dry_run: bool) -> Outcome {
             }
             match fsutil::remove_symlink(&target) {
                 Ok(_) => Outcome::new(&name, "unlinked", true, "cloud copy was missing"),
-                Err(e) => Outcome::new(&name, "error", false, e.to_string()),
+                Err(error) => Outcome::new(&name, "error", false, error.to_string()),
             }
         }
         // Not linked on this machine: nothing to restore here; the caller still
@@ -402,7 +402,7 @@ pub fn enforce_mode(cfg: &Config, item: &Item, dry_run: bool) -> Option<Outcome>
     }
     match fsutil::enforce_secret_tree(&item.source) {
         Ok(_) => Some(Outcome::new(&name, "chmod", true, "tightened to 0700/0600")),
-        Err(e) => Some(Outcome::new(&name, "error", false, e.to_string())),
+        Err(error) => Some(Outcome::new(&name, "error", false, error.to_string())),
     }
 }
 

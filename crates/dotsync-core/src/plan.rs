@@ -151,6 +151,6 @@ pub fn plan(mappings: &MappingsFile, cfg: &Config, os: &str) -> Vec<Item> {
     mappings
         .mappings
         .iter()
-        .map(|m| state_of(m, cfg, os))
+        .map(|mapping| state_of(mapping, cfg, os))
         .collect()
 }

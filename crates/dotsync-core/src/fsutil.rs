@@ -11,7 +11,7 @@ use anyhow::{Context, Result};
 /// True if `path` is a symlink (whether or not its destination exists).
 pub fn is_symlink(path: &Path) -> bool {
     fs::symlink_metadata(path)
-        .map(|m| m.file_type().is_symlink())
+        .map(|meta| meta.file_type().is_symlink())
         .unwrap_or(false)
 }
 
@@ -75,9 +75,9 @@ pub fn move_path(src: &Path, dst: &Path) -> Result<()> {
 
 /// A temp path next to `path` (same directory, so a rename into place is atomic).
 pub fn temp_sibling(path: &Path) -> PathBuf {
-    let mut s = path.as_os_str().to_os_string();
-    s.push(".dotsync-tmp");
-    PathBuf::from(s)
+    let mut os_string = path.as_os_str().to_os_string();
+    os_string.push(".dotsync-tmp");
+    PathBuf::from(os_string)
 }
 
 /// Recursively copy a file, directory, or symlink, preserving symlinks and the
@@ -86,12 +86,12 @@ pub fn temp_sibling(path: &Path) -> PathBuf {
 pub fn copy_recursive(src: &Path, dst: &Path) -> Result<()> {
     let meta = fs::symlink_metadata(src)
         .with_context(|| format!("could not stat {}", src.display()))?;
-    let ft = meta.file_type();
-    if ft.is_symlink() {
+    let file_type = meta.file_type();
+    if file_type.is_symlink() {
         let target = fs::read_link(src)?;
         symlink(&target, dst)
             .with_context(|| format!("could not copy symlink to {}", dst.display()))?;
-    } else if ft.is_dir() {
+    } else if file_type.is_dir() {
         fs::create_dir_all(dst)
             .with_context(|| format!("could not create {}", dst.display()))?;
         for entry in fs::read_dir(src)? {
@@ -114,17 +114,17 @@ pub fn copy_recursive(src: &Path, dst: &Path) -> Result<()> {
 /// Choose a non-clobbering backup path: `<path>.bak`, `<path>.bak.1`, …
 pub fn backup_path(path: &Path) -> PathBuf {
     let base = {
-        let mut s = path.as_os_str().to_os_string();
-        s.push(".bak");
-        PathBuf::from(s)
+        let mut os_string = path.as_os_str().to_os_string();
+        os_string.push(".bak");
+        PathBuf::from(os_string)
     };
     if !path_present(&base) {
         return base;
     }
-    for n in 1.. {
-        let mut s = path.as_os_str().to_os_string();
-        s.push(format!(".bak.{n}"));
-        let candidate = PathBuf::from(s);
+    for counter in 1.. {
+        let mut os_string = path.as_os_str().to_os_string();
+        os_string.push(format!(".bak.{counter}"));
+        let candidate = PathBuf::from(os_string);
         if !path_present(&candidate) {
             return candidate;
         }
@@ -135,28 +135,28 @@ pub fn backup_path(path: &Path) -> PathBuf {
 /// Recursively compare two paths for equal content and structure: files by
 /// bytes, directories by their (name-matched) entries, symlinks by link target.
 /// Returns `false` if either is missing or their types differ.
-pub fn trees_equal(a: &Path, b: &Path) -> bool {
-    let (ma, mb) = match (fs::symlink_metadata(a), fs::symlink_metadata(b)) {
-        (Ok(x), Ok(y)) => (x, y),
+pub fn trees_equal(left: &Path, right: &Path) -> bool {
+    let (left_meta, right_meta) = match (fs::symlink_metadata(left), fs::symlink_metadata(right)) {
+        (Ok(left_meta), Ok(right_meta)) => (left_meta, right_meta),
         _ => return false,
     };
-    let (ta, tb) = (ma.file_type(), mb.file_type());
-    if ta.is_symlink() || tb.is_symlink() {
-        ta.is_symlink() && tb.is_symlink() && fs::read_link(a).ok() == fs::read_link(b).ok()
-    } else if ta.is_dir() && tb.is_dir() {
-        let entries = |p: &Path| -> Option<Vec<std::ffi::OsString>> {
-            let mut v: Vec<_> = fs::read_dir(p).ok()?.flatten().map(|e| e.file_name()).collect();
-            v.sort();
-            Some(v)
+    let (left_type, right_type) = (left_meta.file_type(), right_meta.file_type());
+    if left_type.is_symlink() || right_type.is_symlink() {
+        left_type.is_symlink() && right_type.is_symlink() && fs::read_link(left).ok() == fs::read_link(right).ok()
+    } else if left_type.is_dir() && right_type.is_dir() {
+        let entries = |dir: &Path| -> Option<Vec<std::ffi::OsString>> {
+            let mut names: Vec<_> = fs::read_dir(dir).ok()?.flatten().map(|entry| entry.file_name()).collect();
+            names.sort();
+            Some(names)
         };
-        match (entries(a), entries(b)) {
-            (Some(ea), Some(eb)) if ea == eb => {
-                ea.iter().all(|n| trees_equal(&a.join(n), &b.join(n)))
+        match (entries(left), entries(right)) {
+            (Some(left_names), Some(right_names)) if left_names == right_names => {
+                left_names.iter().all(|name| trees_equal(&left.join(name), &right.join(name)))
             }
             _ => false,
         }
-    } else if ta.is_file() && tb.is_file() {
-        files_equal(a, b)
+    } else if left_type.is_file() && right_type.is_file() {
+        files_equal(left, right)
     } else {
         false
     }
@@ -165,25 +165,25 @@ pub fn trees_equal(a: &Path, b: &Path) -> bool {
 /// Whether two paths refer to the same real location once symlinks and path
 /// normalization are resolved. Returns `false` if either can't be resolved
 /// (e.g. a missing target), so it never masks a dangling link.
-pub fn same_location(a: &Path, b: &Path) -> bool {
-    match (fs::canonicalize(a), fs::canonicalize(b)) {
-        (Ok(x), Ok(y)) => x == y,
+pub fn same_location(left: &Path, right: &Path) -> bool {
+    match (fs::canonicalize(left), fs::canonicalize(right)) {
+        (Ok(left_real), Ok(right_real)) => left_real == right_real,
         _ => false,
     }
 }
 
 /// Byte-compare two regular files. Returns `false` if either isn't a readable
 /// regular file, or if their contents differ.
-pub fn files_equal(a: &Path, b: &Path) -> bool {
-    match (fs::read(a), fs::read(b)) {
-        (Ok(x), Ok(y)) => x == y,
+pub fn files_equal(left: &Path, right: &Path) -> bool {
+    match (fs::read(left), fs::read(right)) {
+        (Ok(left_bytes), Ok(right_bytes)) => left_bytes == right_bytes,
         _ => false,
     }
 }
 
 /// The current mode bits (low 12 bits) of a path, following symlinks.
 pub fn mode_of(path: &Path) -> Option<u32> {
-    fs::metadata(path).ok().map(|m| m.permissions().mode() & 0o7777)
+    fs::metadata(path).ok().map(|meta| meta.permissions().mode() & 0o7777)
 }
 
 /// Set the mode on a path (following symlinks — so calling this on a symlink
@@ -212,12 +212,12 @@ const SECRET_DIRS: &[&str] = &[
 /// adopting the directory `~/.aws` itself is caught, not just `~/.aws/...`).
 /// Best-effort only — the user can always set `mode`/`secret` explicitly.
 pub fn looks_secret(name: &str) -> bool {
-    let n = name.to_ascii_lowercase();
-    let base = n.rsplit('/').next().unwrap_or(&n);
+    let lower = name.to_ascii_lowercase();
+    let base = lower.rsplit('/').next().unwrap_or(&lower);
 
     let dir_secret = SECRET_DIRS
         .iter()
-        .any(|d| n == *d || n.starts_with(&format!("{d}/")));
+        .any(|secret_dir| lower == *secret_dir || lower.starts_with(&format!("{secret_dir}/")));
 
     let file_secret = base.ends_with(".pem")
         || base.ends_with(".key")
@@ -229,8 +229,8 @@ pub fn looks_secret(name: &str) -> bool {
             ".netrc" | ".npmrc" | ".pgpass" | ".authinfo" | ".git-credentials"
                 | ".terraformrc" | ".msmtprc" | "credentials"
         )
-        || n.contains("credential")
-        || n.contains("secret");
+        || lower.contains("credential")
+        || lower.contains("secret");
 
     dir_secret || file_secret
 }
@@ -259,14 +259,14 @@ pub fn enforce_secret_tree(path: &Path) -> Result<()> {
 /// accessible — i.e. a secret whose mode has drifted open.
 pub fn any_too_open(path: &Path) -> bool {
     match fs::symlink_metadata(path) {
-        Ok(m) if m.file_type().is_symlink() => false,
-        Ok(m) => {
-            if mode_of(path).map(|md| md & 0o077 != 0).unwrap_or(false) {
+        Ok(meta) if meta.file_type().is_symlink() => false,
+        Ok(meta) => {
+            if mode_of(path).map(|mode| mode & 0o077 != 0).unwrap_or(false) {
                 return true;
             }
-            if m.is_dir() {
-                if let Ok(rd) = fs::read_dir(path) {
-                    return rd.flatten().any(|e| any_too_open(&e.path()));
+            if meta.is_dir() {
+                if let Ok(entries) = fs::read_dir(path) {
+                    return entries.flatten().any(|entry| any_too_open(&entry.path()));
                 }
             }
             false

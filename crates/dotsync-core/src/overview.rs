@@ -14,9 +14,9 @@ use crate::ui;
 /// A short human label + note for a state, e.g. ("linked", ""). Paths in the
 /// note are collapsed against `home` for readability.
 pub fn label(item: &Item, home: &Path) -> (String, String) {
-    let m = &item.mapping;
+    let mapping = &item.mapping;
     match &item.state {
-        State::Skipped => ("skipped".into(), format!("{} only", m.os_display())),
+        State::Skipped => ("skipped".into(), format!("{} only", mapping.os_display())),
         State::Linked => ("linked".into(), String::new()),
         State::Available => ("available".into(), "in cloud, not linked here".into()),
         State::LocalOnly => ("local-only".into(), "adopt to start syncing".into()),
@@ -28,13 +28,13 @@ pub fn label(item: &Item, home: &Path) -> (String, String) {
     }
 }
 
-fn colorize(state: &State, s: &str) -> String {
+fn colorize(state: &State, text: &str) -> String {
     match state {
-        State::Linked => ui::green(s),
-        State::Available | State::LocalOnly => ui::cyan(s),
-        State::Healable => ui::yellow(s),
-        State::Diverged | State::DanglingSelf | State::ForeignSymlink(_) => ui::red(s),
-        State::Skipped | State::Missing => ui::dim(s),
+        State::Linked => ui::green(text),
+        State::Available | State::LocalOnly => ui::cyan(text),
+        State::Healable => ui::yellow(text),
+        State::Diverged | State::DanglingSelf | State::ForeignSymlink(_) => ui::red(text),
+        State::Skipped | State::Missing => ui::dim(text),
     }
 }
 
@@ -57,23 +57,23 @@ type Bucket = (fn(&State) -> bool, &'static str, fn(&str) -> String);
 pub fn summarize(items: &[Item]) -> String {
     // In display order.
     let buckets: [Bucket; 7] = [
-        (|s| matches!(s, State::Linked), "linked", ui::green),
-        (|s| matches!(s, State::Available), "available", ui::cyan),
-        (|s| matches!(s, State::Healable), "healable", ui::yellow),
+        (|state| matches!(state, State::Linked), "linked", ui::green),
+        (|state| matches!(state, State::Available), "available", ui::cyan),
+        (|state| matches!(state, State::Healable), "healable", ui::yellow),
         (
-            |s| matches!(s, State::Diverged | State::ForeignSymlink(_)),
+            |state| matches!(state, State::Diverged | State::ForeignSymlink(_)),
             "conflict",
             ui::red,
         ),
-        (|s| matches!(s, State::DanglingSelf), "dangling", ui::red),
-        (|s| matches!(s, State::LocalOnly), "local-only", ui::cyan),
-        (|s| matches!(s, State::Skipped), "skipped", ui::dim),
+        (|state| matches!(state, State::DanglingSelf), "dangling", ui::red),
+        (|state| matches!(state, State::LocalOnly), "local-only", ui::cyan),
+        (|state| matches!(state, State::Skipped), "skipped", ui::dim),
     ];
     let mut parts = Vec::new();
     for (pred, label, color) in buckets {
-        let n = items.iter().filter(|i| pred(&i.state)).count();
-        if n > 0 {
-            parts.push(color(&format!("{n} {label}")));
+        let count = items.iter().filter(|item| pred(&item.state)).count();
+        if count > 0 {
+            parts.push(color(&format!("{count} {label}")));
         }
     }
     parts.join(&ui::dim(" · "))
@@ -110,34 +110,34 @@ pub fn render(items: &[Item], cfg: &Config) {
 
     // Column width in *characters*, not bytes: the `{:<name_w$}` formatter pads by
     // char count, so measuring bytes over-pads any non-ASCII name (Danish æ/ø/å).
-    let name_w = items.iter().map(|i| i.name().chars().count()).max().unwrap_or(4).max(4);
+    let name_w = items.iter().map(|item| item.name().chars().count()).max().unwrap_or(4).max(4);
 
     // Group rows (in first-seen order) render under a header with members
     // indented; ungrouped rows render normally.
     let mut group_order: Vec<String> = Vec::new();
     for item in items {
-        if let Some(g) = &item.mapping.group {
-            if !group_order.contains(g) {
-                group_order.push(g.clone());
+        if let Some(group) = &item.mapping.group {
+            if !group_order.contains(group) {
+                group_order.push(group.clone());
             }
         }
     }
-    for g in &group_order {
+    for group in &group_order {
         let members: Vec<&Item> = items
             .iter()
-            .filter(|i| i.mapping.group.as_deref() == Some(g.as_str()))
+            .filter(|item| item.mapping.group.as_deref() == Some(group.as_str()))
             .collect();
-        let linked = members.iter().filter(|i| i.state.is_linked()).count();
+        let linked = members.iter().filter(|item| item.state.is_linked()).count();
         println!(
             "  {}  {}",
-            ui::bold(g),
+            ui::bold(group),
             ui::dim(&format!("group · {}/{} linked", linked, members.len()))
         );
         for item in members {
             print_row(item, &cfg.home, name_w, 4);
         }
     }
-    for item in items.iter().filter(|i| i.mapping.group.is_none()) {
+    for item in items.iter().filter(|item| item.mapping.group.is_none()) {
         print_row(item, &cfg.home, name_w, 0);
     }
     println!();
@@ -145,7 +145,7 @@ pub fn render(items: &[Item], cfg: &Config) {
 
 /// Print one mapping row, optionally indented (for group members).
 fn print_row(item: &Item, home: &Path, name_w: usize, indent: usize) {
-    let (lab, note) = label(item, home);
+    let (state_label, note) = label(item, home);
     let secret = if item.is_secret() {
         ui::dim(&format!(" secret {}", item.mapping.mode.as_deref().unwrap_or("")))
     } else {
@@ -166,7 +166,7 @@ fn print_row(item: &Item, home: &Path, name_w: usize, indent: usize) {
         "  {:indent$}{} {name_cell}  {}{}{}",
         "",
         symbol(&item.state),
-        colorize(&item.state, &lab),
+        colorize(&item.state, &state_label),
         secret,
         note,
         indent = indent,
@@ -181,7 +181,7 @@ pub fn to_json(items: &[Item], cfg: &Config) -> serde_json::Value {
             json!({
                 "name": item.name(),
                 "state": item.state.code(),
-                "target": item.target.as_ref().map(|t| t.display().to_string()),
+                "target": item.target.as_ref().map(|target| target.display().to_string()),
                 "source": item.source.display().to_string(),
                 "linked": item.state.is_linked(),
                 "secret": item.is_secret(),

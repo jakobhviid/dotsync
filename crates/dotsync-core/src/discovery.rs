@@ -36,10 +36,10 @@ fn provider_roots(home: &Path) -> Vec<(String, PathBuf)> {
 
     let cloud_storage = home.join("Library/CloudStorage");
     if let Ok(entries) = std::fs::read_dir(&cloud_storage) {
-        for e in entries.flatten() {
-            let name = e.file_name().to_string_lossy().into_owned();
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
             let label = name.split(['-', '_']).next().unwrap_or(&name).to_string();
-            roots.push((label, e.path()));
+            roots.push((label, entry.path()));
         }
     }
 
@@ -89,11 +89,11 @@ pub fn discover(home: &Path) -> Vec<Candidate> {
             existing.push(direct.clone());
         }
         if let Ok(entries) = std::fs::read_dir(&root) {
-            for e in entries.flatten() {
-                if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                    let p = e.path().join(MARKER);
-                    if p.is_dir() {
-                        existing.push(p);
+            for entry in entries.flatten() {
+                if entry.file_type().map(|file_type| file_type.is_dir()).unwrap_or(false) {
+                    let nested = entry.path().join(MARKER);
+                    if nested.is_dir() {
+                        existing.push(nested);
                     }
                 }
             }
@@ -129,6 +129,6 @@ pub fn discover(home: &Path) -> Vec<Candidate> {
         }
     }
 
-    out.sort_by_key(|c| (!c.configured, !c.exists));
+    out.sort_by_key(|candidate| (!candidate.configured, !candidate.exists));
     out
 }

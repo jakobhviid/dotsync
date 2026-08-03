@@ -34,15 +34,15 @@ struct ConfigFile {
 pub fn home_dir() -> Result<PathBuf> {
     std::env::var_os("HOME")
         .map(PathBuf::from)
-        .filter(|p| !p.as_os_str().is_empty())
+        .filter(|path| !path.as_os_str().is_empty())
         .ok_or_else(|| anyhow!("$HOME is not set"))
 }
 
 /// `$XDG_CONFIG_HOME` or `~/.config`.
 pub fn config_root() -> Result<PathBuf> {
-    if let Some(x) = std::env::var_os("XDG_CONFIG_HOME") {
-        if !x.is_empty() {
-            return Ok(PathBuf::from(x));
+    if let Some(config_home) = std::env::var_os("XDG_CONFIG_HOME") {
+        if !config_home.is_empty() {
+            return Ok(PathBuf::from(config_home));
         }
     }
     Ok(home_dir()?.join(".config"))
@@ -68,7 +68,7 @@ pub fn load() -> Result<Option<Config>> {
     };
     // `home` may be stored as `~`; resolve it first, then the sync dir against it.
     let home = match file.home {
-        Some(h) => expand_tilde(&h, &home_dir()?),
+        Some(stored_home) => expand_tilde(&stored_home, &home_dir()?),
         None => home_dir()?,
     };
     Ok(Some(Config {
@@ -106,11 +106,11 @@ pub fn save(cfg: &Config) -> Result<()> {
 /// if any. Used to keep synced content — especially secrets — out of git.
 pub fn enclosing_git_tree(path: &Path) -> Option<PathBuf> {
     let mut dir = Some(path);
-    while let Some(d) = dir {
-        if d.join(".git").exists() {
-            return Some(d.to_path_buf());
+    while let Some(current) = dir {
+        if current.join(".git").exists() {
+            return Some(current.to_path_buf());
         }
-        dir = d.parent();
+        dir = current.parent();
     }
     None
 }

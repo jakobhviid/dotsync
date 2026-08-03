@@ -44,15 +44,15 @@ impl Report {
     /// to the human but don't make a machine "unhealthy" (they're often
     /// transient, e.g. a cloud copy not downloaded yet).
     pub fn healthy(&self) -> bool {
-        !self.issues.iter().any(|i| i.level == Level::Error)
+        !self.issues.iter().any(|issue| issue.level == Level::Error)
     }
 
     pub fn errors(&self) -> impl Iterator<Item = &Issue> {
-        self.issues.iter().filter(|i| i.level == Level::Error)
+        self.issues.iter().filter(|issue| issue.level == Level::Error)
     }
 
     pub fn advisories(&self) -> impl Iterator<Item = &Issue> {
-        self.issues.iter().filter(|i| i.level == Level::Warn)
+        self.issues.iter().filter(|issue| issue.level == Level::Warn)
     }
 }
 
@@ -143,7 +143,7 @@ pub fn run(cfg: &Config, mappings: &MappingsFile, os: &str, fix: bool) -> Result
 
     // World/group-accessible sync folder = weak protection for any secrets in it.
     if let Some(mode) = crate::fsutil::mode_of(&cfg.sync_dir) {
-        if mode & 0o077 != 0 && items.iter().any(|i| i.mapping.mode.is_some()) {
+        if mode & 0o077 != 0 && items.iter().any(|item| item.mapping.mode.is_some()) {
             report.issues.push(Issue {
                 name: cfg.sync_dir.display().to_string(),
                 level: Level::Warn,
@@ -204,8 +204,8 @@ pub fn run(cfg: &Config, mappings: &MappingsFile, os: &str, fix: bool) -> Result
     // synced in but were never linked here. Read-only advisory.
     let mut by_group: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
     for item in &items {
-        if let Some(g) = item.mapping.group.as_deref() {
-            let counts = by_group.entry(g).or_default();
+        if let Some(group) = item.mapping.group.as_deref() {
+            let counts = by_group.entry(group).or_default();
             match item.state {
                 State::Linked => counts.0 += 1,
                 State::Available => counts.1 += 1,
@@ -246,10 +246,10 @@ pub fn run(cfg: &Config, mappings: &MappingsFile, os: &str, fix: bool) -> Result
                         true,
                         "removed a symlink with no mapping (cloud copy kept)",
                     )),
-                    Err(e) => report.issues.push(Issue {
+                    Err(error) => report.issues.push(Issue {
                         name: rel,
                         level: Level::Error,
-                        message: format!("could not remove orphan symlink: {e}"),
+                        message: format!("could not remove orphan symlink: {error}"),
                         fixable: false,
                     }),
                 }
@@ -276,7 +276,7 @@ fn covered(rel: &str, mappings: &MappingsFile) -> bool {
     mappings
         .mappings
         .iter()
-        .any(|m| m.name == rel || rel.starts_with(&format!("{}/", m.name)))
+        .any(|mapping| mapping.name == rel || rel.starts_with(&format!("{}/", mapping.name)))
 }
 
 /// Walk the cloud tree looking for orphan links: a cloud path whose matching
@@ -304,7 +304,7 @@ fn scan_orphans(
             continue;
         }
         // This path is itself a mapping → the whole subtree is covered; skip it.
-        if mappings.mappings.iter().any(|m| m.name == rel) {
+        if mappings.mappings.iter().any(|mapping| mapping.name == rel) {
             continue;
         }
         let home_path = cfg.home.join(&rel);
@@ -315,8 +315,8 @@ fn scan_orphans(
             out.push(rel);
             continue; // don't descend into the orphan's own subtree
         }
-        if entry.file_type().map(|t| t.is_dir()).unwrap_or(false)
-            && !entry.file_type().map(|t| t.is_symlink()).unwrap_or(false)
+        if entry.file_type().map(|file_type| file_type.is_dir()).unwrap_or(false)
+            && !entry.file_type().map(|file_type| file_type.is_symlink()).unwrap_or(false)
         {
             scan_orphans(root, &path, cfg, mappings, out);
         }
@@ -339,10 +339,10 @@ fn scan_conflicted(root: &Path, dir: &Path, out: &mut Vec<String>) {
             let rel = path.strip_prefix(root).unwrap_or(&path);
             out.push(rel.to_string_lossy().into_owned());
         }
-        if entry.file_type().map(|t| t.is_dir()).unwrap_or(false)
+        if entry.file_type().map(|file_type| file_type.is_dir()).unwrap_or(false)
             && !entry
                 .file_type()
-                .map(|t| t.is_symlink())
+                .map(|file_type| file_type.is_symlink())
                 .unwrap_or(false)
         {
             scan_conflicted(root, &path, out);
@@ -353,6 +353,6 @@ fn scan_conflicted(root: &Path, dir: &Path, out: &mut Vec<String>) {
 /// Permissions of a path as an octal string (for display).
 pub fn mode_string(path: &Path) -> String {
     std::fs::metadata(path)
-        .map(|m| format!("{:04o}", m.permissions().mode() & 0o7777))
+        .map(|meta| format!("{:04o}", meta.permissions().mode() & 0o7777))
         .unwrap_or_else(|_| "????".into())
 }

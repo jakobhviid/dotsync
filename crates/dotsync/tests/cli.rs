@@ -12,10 +12,10 @@ use dotsync_core::mapping::{Mapping, MappingsFile};
 /// `dotsync.toml` with the given `(name, group)` mappings. Returns the tempdir
 /// (kept alive), the home dir, the XDG dir, and the sync dir.
 fn configured(mappings: &[(&str, &str)]) -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
-    let d = tempfile::tempdir().unwrap();
-    let home = d.path().join("home");
-    let xdg = d.path().join("xdg");
-    let sync = d.path().join("cloud/dotsync");
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let xdg = dir.path().join("xdg");
+    let sync = dir.path().join("cloud/dotsync");
     fs::create_dir_all(&home).unwrap();
     fs::create_dir_all(xdg.join("dotsync")).unwrap();
     fs::create_dir_all(&sync).unwrap();
@@ -28,13 +28,13 @@ fn configured(mappings: &[(&str, &str)]) -> (tempfile::TempDir, PathBuf, PathBuf
 
     let mut file = MappingsFile::default();
     for (name, group) in mappings {
-        let mut m = Mapping::new(*name);
-        m.group = Some((*group).to_string());
-        file.upsert(m);
+        let mut mapping = Mapping::new(*name);
+        mapping.group = Some((*group).to_string());
+        file.upsert(mapping);
     }
     file.save(&sync.join(MappingsFile::FILE_NAME)).unwrap();
 
-    (d, home, xdg, sync)
+    (dir, home, xdg, sync)
 }
 
 /// `dotsync` invocation wired to a configured sandbox.
@@ -50,7 +50,7 @@ fn reload(sync: &std::path::Path) -> MappingsFile {
 
 #[test]
 fn group_list_reports_groups_and_members_as_json() {
-    let (_d, home, xdg, _sync) = configured(&[
+    let (_tmp, home, xdg, _sync) = configured(&[
         (".claude/CLAUDE.md", "claude"),
         (".claude/settings.json", "claude"),
         (".config/zed/settings.json", "zed"),
@@ -65,13 +65,13 @@ fn group_list_reports_groups_and_members_as_json() {
     let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
     let groups = v["groups"].as_array().unwrap();
     assert_eq!(groups.len(), 2);
-    let claude = groups.iter().find(|g| g["name"] == "claude").unwrap();
+    let claude = groups.iter().find(|group| group["name"] == "claude").unwrap();
     assert_eq!(claude["members"].as_array().unwrap().len(), 2);
 }
 
 #[test]
 fn group_move_reassigns_a_single_mapping() {
-    let (_d, home, xdg, sync) = configured(&[
+    let (_tmp, home, xdg, sync) = configured(&[
         (".config/zed/settings.json", "zed"),
         (".config/nvim/init.lua", "nvim"),
     ]);
@@ -79,14 +79,14 @@ fn group_move_reassigns_a_single_mapping() {
         .args(["group", "move", ".config/zed/settings.json", "editors", "--json"])
         .assert()
         .success();
-    let f = reload(&sync);
-    let moved = f.find(".config/zed/settings.json").unwrap();
+    let file = reload(&sync);
+    let moved = file.find(".config/zed/settings.json").unwrap();
     assert_eq!(moved.group.as_deref(), Some("editors"));
 }
 
 #[test]
 fn group_rename_relabels_all_members_and_merges_on_collision() {
-    let (_d, home, xdg, sync) = configured(&[
+    let (_tmp, home, xdg, sync) = configured(&[
         (".config/zed/settings.json", "zed"),
         (".config/code/settings.json", "code"),
     ]);
@@ -101,19 +101,19 @@ fn group_rename_relabels_all_members_and_merges_on_collision() {
     let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
     assert_eq!(v["merged"], serde_json::json!(true));
 
-    let f = reload(&sync);
-    assert_eq!(f.groups(), vec!["code".to_string()]);
-    assert!(f
+    let file = reload(&sync);
+    assert_eq!(file.groups(), vec!["code".to_string()]);
+    assert!(file
         .mappings
         .iter()
-        .all(|m| m.group.as_deref() == Some("code")));
+        .all(|mapping| mapping.group.as_deref() == Some("code")));
 }
 
 #[test]
 fn group_remove_refuses_without_yes_in_json_mode() {
     // The all-machines blast radius must never be triggered non-interactively
     // without an explicit --yes.
-    let (_d, home, xdg, sync) = configured(&[(".config/zed/settings.json", "zed")]);
+    let (_tmp, home, xdg, sync) = configured(&[(".config/zed/settings.json", "zed")]);
     // In --json mode the refusal is a structured error on stdout, not stderr.
     dotsync(&home, &xdg)
         .args(["group", "remove", "zed", "--json"])
@@ -128,7 +128,7 @@ fn group_remove_refuses_without_yes_in_json_mode() {
 fn group_name_cannot_shadow_a_mapping() {
     // A group renamed onto a bare mapping name (Brewfile) must be refused —
     // otherwise the group shadows the mapping in the `install <name>` selector.
-    let (_d, home, xdg, sync) = configured(&[
+    let (_tmp, home, xdg, sync) = configured(&[
         (".config/zed/settings.json", "zed"),
         ("Brewfile", "packages"),
     ]);
@@ -146,7 +146,7 @@ fn group_name_cannot_shadow_a_mapping() {
 
 #[test]
 fn group_move_to_a_new_group_reports_created() {
-    let (_d, home, xdg, _sync) = configured(&[(".config/zed/settings.json", "zed")]);
+    let (_tmp, home, xdg, _sync) = configured(&[(".config/zed/settings.json", "zed")]);
     let out = dotsync(&home, &xdg)
         .args(["group", "move", ".config/zed/settings.json", "editors", "--json"])
         .assert()
@@ -162,7 +162,7 @@ fn group_move_to_a_new_group_reports_created() {
 fn doctor_prints_advisories_to_stdout() {
     // A forked dotsync.toml is an advisory; it must land on stdout so `doctor`
     // output is capturable as a whole (regression guard for the stderr split).
-    let (_d, home, xdg, sync) = configured(&[(".config/zed/settings.json", "zed")]);
+    let (_tmp, home, xdg, sync) = configured(&[(".config/zed/settings.json", "zed")]);
     std::fs::write(sync.join("dotsync-HOST.toml"), "").unwrap();
     let out = dotsync(&home, &xdg)
         .arg("doctor")
@@ -171,16 +171,16 @@ fn doctor_prints_advisories_to_stdout() {
         .get_output()
         .stdout
         .clone();
-    let s = String::from_utf8_lossy(&out);
+    let stdout_text = String::from_utf8_lossy(&out);
     assert!(
-        s.contains("conflicted copy of dotsync.toml"),
-        "advisory must be on stdout; got: {s}"
+        stdout_text.contains("conflicted copy of dotsync.toml"),
+        "advisory must be on stdout; got: {stdout_text}"
     );
 }
 
 #[test]
 fn unadopt_drops_mapping_from_config() {
-    let (_d, home, xdg, sync) = configured(&[(".config/zed/settings.json", "zed")]);
+    let (_tmp, home, xdg, sync) = configured(&[(".config/zed/settings.json", "zed")]);
     dotsync(&home, &xdg)
         .args(["unadopt", ".config/zed/settings.json", "--yes", "--json"])
         .assert()
@@ -193,7 +193,7 @@ fn unadopt_drops_mapping_from_config() {
 
 #[test]
 fn unadopt_without_yes_refuses() {
-    let (_d, home, xdg, sync) = configured(&[(".config/zed/settings.json", "zed")]);
+    let (_tmp, home, xdg, sync) = configured(&[(".config/zed/settings.json", "zed")]);
     dotsync(&home, &xdg)
         .args(["unadopt", ".config/zed/settings.json", "--json"])
         .assert()
@@ -207,12 +207,12 @@ fn unadopt_without_yes_refuses() {
 
 #[test]
 fn setup_json_emits_config() {
-    let d = tempfile::tempdir().unwrap();
-    let home = d.path().join("home");
-    let xdg = d.path().join("xdg");
-    let sync = d.path().join("cloud/dotsync");
-    for p in [&home, &xdg, &sync] {
-        std::fs::create_dir_all(p).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let xdg = dir.path().join("xdg");
+    let sync = dir.path().join("cloud/dotsync");
+    for path in [&home, &xdg, &sync] {
+        std::fs::create_dir_all(path).unwrap();
     }
     let out = Command::cargo_bin("dotsync")
         .unwrap()
@@ -230,7 +230,7 @@ fn setup_json_emits_config() {
 
 #[test]
 fn group_remove_dry_run_changes_nothing() {
-    let (_d, home, xdg, sync) = configured(&[(".config/zed/settings.json", "zed")]);
+    let (_tmp, home, xdg, sync) = configured(&[(".config/zed/settings.json", "zed")]);
     dotsync(&home, &xdg)
         .args(["group", "remove", "zed", "--dry-run", "--json"])
         .assert()
