@@ -218,6 +218,7 @@ dependencies = [
  "clap_mangen",
  "dialoguer",
  "dotsync-core",
+ "libc",
  "predicates",
  "serde_json",
  "tempfile",

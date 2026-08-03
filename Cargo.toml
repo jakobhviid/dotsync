@@ -11,3 +11,10 @@ homepage = "https://github.com/jakobhviid/dotsync"
 [profile.release]
 opt-level = 3
 lto = true
+strip = true          # drop debug symbols → smaller shipped/brew-poured binaries
+
+# Clippy is the house green gate (CI runs it with `-D warnings`). Declaring the
+# policy here means a plain local `cargo clippy` enforces the same lints, so the
+# gate can't be forgotten before a push.
+[workspace.lints.clippy]
+all = "warn"

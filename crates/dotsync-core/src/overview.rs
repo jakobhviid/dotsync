@@ -108,7 +108,9 @@ pub fn render(items: &[Item], cfg: &Config) {
     }
     println!();
 
-    let name_w = items.iter().map(|i| i.name().len()).max().unwrap_or(4).max(4);
+    // Column width in *characters*, not bytes: the `{:<name_w$}` formatter pads by
+    // char count, so measuring bytes over-pads any non-ASCII name (Danish æ/ø/å).
+    let name_w = items.iter().map(|i| i.name().chars().count()).max().unwrap_or(4).max(4);
 
     // Group rows (in first-seen order) render under a header with members
     // indented; ungrouped rows render normally.

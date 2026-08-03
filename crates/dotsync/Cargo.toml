@@ -19,6 +19,12 @@ clap_complete = "4"
 clap_mangen = "0.2"
 dialoguer = { version = "0.11", default-features = false }
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"          # reset SIGPIPE to default so `dotsync … | head` exits quietly
+
+[lints]
+workspace = true
+
 [dev-dependencies]
 assert_cmd = "2"
 tempfile = "3"

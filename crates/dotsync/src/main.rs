@@ -172,6 +172,11 @@ enum GroupCmd {
 }
 
 fn main() -> ExitCode {
+    // Restore the default SIGPIPE handler so piping long output into `head`/`less`
+    // and quitting terminates dotsync quietly instead of panicking on a broken
+    // pipe (Rust ignores SIGPIPE by default). See `reset_sigpipe`.
+    reset_sigpipe();
+
     // `--llm` is a documentation flag like `--help`: works from anywhere, needs
     // no subcommand, so intercept it before clap enforces one.
     if std::env::args().skip(1).any(|a| a == "--llm") {
@@ -183,15 +188,32 @@ fn main() -> ExitCode {
     match run(&cli) {
         Ok(code) => code,
         Err(e) => {
+            // `{e:#}` prints the whole anyhow context chain, not just the top line.
             if cli.json {
-                println!("{}", json!({ "error": e.to_string() }));
+                println!("{}", json!({ "error": format!("{e:#}") }));
             } else {
-                ui::err(&e.to_string());
+                ui::err(&format!("{e:#}"));
             }
             ExitCode::FAILURE
         }
     }
 }
+
+/// Restore `SIGPIPE` to its default (terminate) disposition on Unix. The Rust
+/// runtime sets it to `SIG_IGN`, which turns a closed downstream pipe into an
+/// `ErrorKind::BrokenPipe` panic deep in a `println!`; restoring the default
+/// makes `dotsync status | head` exit silently like every other CLI.
+#[cfg(unix)]
+fn reset_sigpipe() {
+    // SAFETY: resetting a signal disposition to the OS default before any threads
+    // or output exist is the standard idiom; there is nothing to race with.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+}
+
+#[cfg(not(unix))]
+fn reset_sigpipe() {}
 
 fn run(cli: &Cli) -> Result<ExitCode> {
     match &cli.cmd {
@@ -272,7 +294,7 @@ fn cmd_default(json: bool) -> Result<ExitCode> {
     let outcomes = picker::run(&items, &cfg.home)?;
     report_outcomes(&outcomes, &cfg.home, false);
     doctor_hint(&cfg, &mappings);
-    Ok(exit_from(&outcomes))
+    Ok(ExitCode::SUCCESS)
 }
 
 fn cmd_status(json: bool) -> Result<ExitCode> {
@@ -306,10 +328,12 @@ fn cmd_config(json: bool) -> Result<ExitCode> {
                     }))?
                 );
             } else {
-                ui::info(&format!("sync folder : {}", cfg.sync_dir.display()));
-                ui::info(&format!("home base   : {}", cfg.home.display()));
-                ui::info(&format!("config      : {}", config::config_path()?.display()));
-                ui::info(&format!("mappings    : {}", mappings.mappings.len()));
+                // `config` is a query: its result is the payload, so it goes to
+                // stdout (undecorated, greppable), not through the stderr helpers.
+                println!("sync folder : {}", cfg.sync_dir.display());
+                println!("home base   : {}", cfg.home.display());
+                println!("config      : {}", config::config_path()?.display());
+                println!("mappings    : {}", mappings.mappings.len());
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -317,7 +341,7 @@ fn cmd_config(json: bool) -> Result<ExitCode> {
             if json {
                 println!("{}", json!({ "configured": false }));
             } else {
-                ui::warn("dotsync is not configured on this machine — run `dotsync setup`");
+                println!("dotsync is not configured on this machine — run `dotsync setup`");
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -581,13 +605,19 @@ fn cmd_adopt(
         );
     } else {
         report_outcomes(&outcomes, &cfg.home, false);
-        if outcomes.iter().any(|o| o.ok) {
-            let note = if merging { ui::dim(" (added to existing group)") } else { String::new() };
-            ui::info(&format!("group: {}{}", ui::bold(&group), note));
-            ui::info(&ui::dim("manage with `dotsync group list/rename/move/remove`"));
+        if outcomes.iter().any(|outcome| outcome.ok) {
+            // These notes follow the sweep log on stderr, so their styling is
+            // gated on stderr too (not the stdout palette).
+            let note = if merging {
+                ui::paint(ui::To::Err, "2", " (added to existing group)")
+            } else {
+                String::new()
+            };
+            ui::info(&format!("group: {}{}", ui::paint(ui::To::Err, "1", &group), note));
+            ui::info(&ui::paint(ui::To::Err, "2", "manage with `dotsync group list/rename/move/remove`"));
         }
     }
-    Ok(exit_from(&outcomes))
+    Ok(ExitCode::SUCCESS)
 }
 
 /// Interactive group picker for `adopt`: pick an existing group or create one
@@ -688,7 +718,8 @@ fn cmd_group_list(json: bool) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
     if groups.is_empty() {
-        ui::info("no groups yet — `dotsync adopt <path>` creates one");
+        // `group list` is a query — its answer is the payload → stdout.
+        println!("no groups yet — `dotsync adopt <path>` creates one");
         return Ok(ExitCode::SUCCESS);
     }
     for g in &groups {
@@ -819,7 +850,7 @@ fn cmd_group_remove(name: &str, dry_run: bool, yes: bool, json: bool) -> Result<
         mappings.save(&cfg.sync_dir.join(MappingsFile::FILE_NAME))?;
     }
     report_outcomes(&outcomes, &cfg.home, json);
-    Ok(exit_from(&outcomes))
+    Ok(ExitCode::SUCCESS)
 }
 
 fn select_items<'a>(items: &'a [Item], names: &[String], all: bool) -> Result<Vec<&'a Item>> {
@@ -873,7 +904,7 @@ fn cmd_install(names: &[String], all: bool, dry_run: bool, adopt: bool, json: bo
         let outcomes = picker::run(&items, &cfg.home)?;
         report_outcomes(&outcomes, &cfg.home, false);
         doctor_hint(&cfg, &mappings);
-        return Ok(exit_from(&outcomes));
+        return Ok(ExitCode::SUCCESS);
     }
 
     let selected = select_items(&items, names, all)?;
@@ -885,7 +916,7 @@ fn cmd_install(names: &[String], all: bool, dry_run: bool, adopt: bool, json: bo
     if !json {
         doctor_hint(&cfg, &mappings);
     }
-    Ok(exit_from(&outcomes))
+    Ok(ExitCode::SUCCESS)
 }
 
 fn cmd_uninstall(names: &[String], all: bool, dry_run: bool, json: bool) -> Result<ExitCode> {
@@ -904,7 +935,7 @@ fn cmd_uninstall(names: &[String], all: bool, dry_run: bool, json: bool) -> Resu
         .map(|i| apply::unlink_item(i, dry_run))
         .collect();
     report_outcomes(&outcomes, &cfg.home, json);
-    Ok(exit_from(&outcomes))
+    Ok(ExitCode::SUCCESS)
 }
 
 fn cmd_unadopt(names: &[String], dry_run: bool, yes: bool, json: bool) -> Result<ExitCode> {
@@ -954,7 +985,7 @@ fn cmd_unadopt(names: &[String], dry_run: bool, yes: bool, json: bool) -> Result
         mappings.save(&cfg.sync_dir.join(MappingsFile::FILE_NAME))?;
     }
     report_outcomes(&outcomes, &cfg.home, json);
-    Ok(exit_from(&outcomes))
+    Ok(ExitCode::SUCCESS)
 }
 
 fn cmd_doctor(fix: bool, json: bool) -> Result<ExitCode> {
@@ -989,8 +1020,10 @@ fn cmd_doctor(fix: bool, json: bool) -> Result<ExitCode> {
     let home_str = cfg.home.to_string_lossy().into_owned();
     let short = |s: &str| s.replace(&home_str, "~");
 
+    // doctor is a query: its whole report — the fixes it applied included — is the
+    // result, so it all goes to stdout (greppable/capturable as one document).
     for out in &report.fixed {
-        ui::ok(&format!("fixed {}  {} {}", ui::bold(&out.name), out.action, short(&out.detail)));
+        println!("{} fixed {}  {} {}", ui::green("✓"), ui::bold(&out.name), out.action, short(&out.detail));
     }
 
     let errors: Vec<_> = report.errors().collect();
@@ -1018,7 +1051,7 @@ fn cmd_doctor(fix: bool, json: bool) -> Result<ExitCode> {
 
     println!();
     if errors.is_empty() && advisories.is_empty() && report.fixed.is_empty() {
-        ui::ok("everything looks healthy");
+        println!("{} everything looks healthy", ui::green("✓"));
     } else {
         let mut parts = Vec::new();
         if !errors.is_empty() {
@@ -1038,19 +1071,33 @@ fn cmd_doctor(fix: bool, json: bool) -> Result<ExitCode> {
 /// Print a hint to run doctor if the current state has problems.
 fn doctor_hint(cfg: &Config, mappings: &MappingsFile) {
     let items = plan(mappings, cfg, current_os());
-    if items.iter().any(|i| i.state.is_problem()) {
-        println!("\n{}", ui::dim("Other items need attention — run `dotsync doctor`."));
+    if items.iter().any(|item| item.state.is_problem()) {
+        // A trailing nudge is narration, not the command's result → stderr.
+        eprintln!(
+            "\n{}",
+            ui::paint(ui::To::Err, "2", "Other items need attention — run `dotsync doctor`.")
+        );
     }
 }
 
+/// Render a mutating sweep's per-item outcomes. Exit-code contract: a sweep
+/// **always exits `SUCCESS`** — per-item failures are surfaced here (the `⚠`
+/// headline, each `✗` line) and in `--json`, never in `$?`. Non-zero is reserved
+/// for "the command could not run at all" (a hard error, propagated as `Err` and
+/// rendered by `main`). Callers gate on the results, not the exit status.
 fn report_outcomes(outcomes: &[Outcome], home: &Path, json: bool) {
     if json {
+        // The machine-readable result of a sweep is its JSON document → stdout.
         let arr: Vec<_> = outcomes.iter().map(outcome_json).collect();
         println!("{}", serde_json::to_string_pretty(&json!({ "results": arr })).unwrap_or_default());
         return;
     }
+    // A mutating sweep narrates what it did. That per-item log is *process*, not
+    // result — and because it carries failures (which must never land on stdout)
+    // the whole log, successes included, unifies onto stderr as one ordered
+    // stream. `--json` above is the result a program should consume.
     if outcomes.is_empty() {
-        println!("{}", ui::dim("nothing to do"));
+        eprintln!("{}", ui::paint(ui::To::Err, "2", "nothing to do"));
         return;
     }
     let home_str = home.to_string_lossy().into_owned();
@@ -1060,26 +1107,32 @@ fn report_outcomes(outcomes: &[Outcome], home: &Path, json: bool) {
         let detail = if detail.is_empty() {
             String::new()
         } else {
-            format!(" — {}", ui::dim(&detail))
+            format!(" — {}", ui::paint(ui::To::Err, "2", &detail))
         };
-        let line = format!("{}  {}{}", ui::bold(&out.name), out.action, detail);
-        if out.ok {
-            ui::ok(&line);
+        let glyph = if out.ok {
+            ui::paint(ui::To::Err, "32", "✓")
         } else {
-            // Keep the itemized report on one stream (stdout) so a captured/piped
-            // report shows which items failed, not just the successes.
-            println!("{} {}", ui::red("✗"), line);
-        }
+            ui::paint(ui::To::Err, "31", "✗")
+        };
+        eprintln!("{glyph} {}  {}{}", ui::paint(ui::To::Err, "1", &out.name), out.action, detail);
     }
-    // Summary when more than one thing happened.
+    // Failure-aware headline: when any item failed, lead with `⚠ N of M failed`
+    // (glyph *and* text, never colour alone) so partial failure stays visible even
+    // when the log is piped and colour is stripped. Shown only for a multi-item
+    // sweep — a lone failure is already salient on its own `✗` line above.
     if outcomes.len() > 1 {
-        let ok = outcomes.iter().filter(|o| o.ok).count();
+        let ok = outcomes.iter().filter(|outcome| outcome.ok).count();
         let failed = outcomes.len() - ok;
-        let mut parts = vec![ui::green(&format!("{ok} ok"))];
         if failed > 0 {
-            parts.push(ui::red(&format!("{failed} failed")));
+            eprintln!(
+                "{} {} {}",
+                ui::paint(ui::To::Err, "33", &format!("⚠ {failed} of {} failed", outcomes.len())),
+                ui::paint(ui::To::Err, "2", "·"),
+                ui::paint(ui::To::Err, "32", &format!("{ok} ok")),
+            );
+        } else {
+            eprintln!("{}", ui::paint(ui::To::Err, "32", &format!("✓ {ok} ok")));
         }
-        println!("  {}", parts.join(&ui::dim(" · ")));
     }
 }
 
@@ -1097,14 +1150,6 @@ fn plural(n: usize) -> &'static str {
         ""
     } else {
         "s"
-    }
-}
-
-fn exit_from(outcomes: &[Outcome]) -> ExitCode {
-    if outcomes.iter().all(|o| o.ok) {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::FAILURE
     }
 }
 
@@ -1143,6 +1188,8 @@ fn llm_guide() -> String {
     out.push_str(include_str!("../../../WORKFLOWS.md"));
     out.push_str("\n\n================================ README ================================\n\n");
     out.push_str(include_str!("../../../README.md"));
+    out.push_str("\n\n================================ ROADMAP ================================\n\n");
+    out.push_str(include_str!("../../../ROADMAP.md"));
     if !out.ends_with('\n') {
         out.push('\n');
     }

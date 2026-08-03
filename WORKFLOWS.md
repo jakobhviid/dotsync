@@ -208,17 +208,36 @@ confirm/`--yes`/`--dry-run` guardrails.
 
 ## Exit codes
 
-`0` = success. Non-zero = at least one problem or failed item:
+Non-zero is reserved for **"the command could not run"** (not configured, a bad
+path, an unreadable/unwritable sync folder). A **per-item failure never changes the
+exit status** — gate automation on the per-item results, not on `$?`.
 
-- `install` / `uninstall` / `adopt` / `unadopt` / `group remove` exit non-zero if
-  any selected item failed (e.g. an `install` that hit a conflict) — the healthy
-  items still applied; the report shows `N ok · M failed`.
-- `doctor` exits non-zero only on an **error-level** problem (a real conflict, or
-  a secret / the sync folder inside a git repo). Warn-level advisories (dangling
-  links, drift, conflicted-copy siblings) keep it `0`.
+- `install` / `uninstall` / `adopt` / `unadopt` / `group remove` exit `0` **even
+  when some items failed** (e.g. an `install` that hit a conflict): the healthy
+  items still applied, and the failures are surfaced in the human headline
+  (`⚠ N of M failed`) and in `--json` (each `results[].ok`). To detect partial
+  failure in a script, read those counts — or chain `&& dotsync doctor`, which is
+  the explicit health gate:
+
+  ```sh
+  dotsync install --all --json | jq -e '.results | all(.ok)'   # false ⇒ something failed
+  dotsync install --all && dotsync doctor                       # doctor is the gate
+  ```
+
+- `doctor` is a health **check**, so it *does* exit non-zero on an **error-level**
+  problem (a real conflict, or a secret / the sync folder inside a git repo).
+  Warn-level advisories (dangling links, drift, conflicted-copy siblings) keep it
+  `0`. Use it as the pass/fail gate for automation.
 - `status`, `config`, and `group list` always exit `0`.
 - A `--dry-run` preview never fails on transient states (dangling / conflict show
   as `would-skip`).
+
+Human output follows the house stream split: a command's **result** (the `status`
+table, the `doctor` report, any `--json` document) is written to **stdout**; the
+narration of a mutating sweep — its per-item `✓`/`✗` log and the `⚠`/`✓` headline —
+goes to **stderr**. So `dotsync status > out.txt` captures the table,
+`dotsync … --json | jq` stays clean, and to keep a sweep's human log you redirect
+stderr (`dotsync install --all 2> log.txt`).
 
 ## JSON output (`--json`)
 
