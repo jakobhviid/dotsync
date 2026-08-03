@@ -156,16 +156,20 @@ fn print_row(item: &Item, home: &Path, name_w: usize, indent: usize) {
     } else {
         format!("  {}", ui::dim(&note))
     };
+    // Link the name to its cloud copy (file://…), padded by the *visible* width so
+    // the invisible OSC-8 escape can't throw off column alignment.
+    let name = item.name();
+    let linked = ui::hyperlink(name, &format!("file://{}", item.source.display()));
+    let padding = name_w.saturating_sub(name.chars().count());
+    let name_cell = format!("{linked}{blank:padding$}", blank = "");
     println!(
-        "  {:indent$}{} {:<name_w$}  {}{}{}",
+        "  {:indent$}{} {name_cell}  {}{}{}",
         "",
         symbol(&item.state),
-        item.name(),
         colorize(&item.state, &lab),
         secret,
         note,
         indent = indent,
-        name_w = name_w,
     );
 }
 

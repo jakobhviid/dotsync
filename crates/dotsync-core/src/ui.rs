@@ -27,10 +27,8 @@ pub enum To {
     Err,
 }
 
-fn colour_for(to: To) -> bool {
-    if std::env::var_os("NO_COLOR").is_some() {
-        return false;
-    }
+/// Whether the given stream is a terminal (cached once per stream).
+fn stream_is_terminal(to: To) -> bool {
     match to {
         To::Out => {
             static ENABLED: OnceLock<bool> = OnceLock::new();
@@ -43,11 +41,27 @@ fn colour_for(to: To) -> bool {
     }
 }
 
+fn colour_for(to: To) -> bool {
+    std::env::var_os("NO_COLOR").is_none() && stream_is_terminal(to)
+}
+
 /// Wrap `text` in an ANSI colour code when its destination stream is a
 /// colour-capable terminal, otherwise return it unchanged.
 pub fn paint(to: To, code: &str, text: &str) -> String {
     if colour_for(to) {
         format!("\x1b[{code}m{text}\x1b[0m")
+    } else {
+        text.to_string()
+    }
+}
+
+/// Wrap `text` as an OSC-8 hyperlink to `url` when writing to a terminal, else
+/// return it plain. Gated purely on stdout being a TTY (not `NO_COLOR` — a link
+/// is not colour), so piped/redirected output stays plain text; terminals that
+/// don't support OSC-8 consume the well-formed escape and show just the text.
+pub fn hyperlink(text: &str, url: &str) -> String {
+    if stream_is_terminal(To::Out) {
+        format!("\x1b]8;;{url}\x1b\\{text}\x1b]8;;\x1b\\")
     } else {
         text.to_string()
     }

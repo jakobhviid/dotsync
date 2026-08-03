@@ -12,12 +12,9 @@ ideas that were weighed and set aside are under "Considered and deferred."
 
 ## Known gaps / cleanups
 
-- **Readable-names pass.** Some closures still use single-letter bindings
-  (`|m|`, `|i|`, `|o|`) against the house CODE-STYLE ("name every binding"). Sweep
-  them to real names as files are touched.
-- **Clickable paths.** OSC 8 hyperlinks in `status` / the overview (link each mapping
-  to its cloud copy or `file://` target), dropped cleanly on terminals that don't
-  support them.
+- **Readable-names pass.** Eliminate every single-letter / cryptic binding — locals,
+  loop variables, and closure arguments alike (`r` → `row`, not just closures) — per
+  the house CODE-STYLE ("no single-letter or cryptic names, anywhere").
 
 ## Considered and deferred
 
