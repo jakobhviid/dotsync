@@ -14,10 +14,29 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test --workspace
+        with:
+          components: clippy
+      # Clippy is the house green gate: warnings are errors, and a red gate
+      # publishes nothing. `cargo test` alone is not enough.
+      - name: Clippy (-D warnings)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --workspace
+
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # Supply-chain gate: permissive-only licenses, banned TLS stacks, crates.io
+      # only. Advisories are intentionally NOT checked here (see deny.toml) so a
+      # fresh CVE can't block an unrelated release.
+      - name: cargo-deny (licenses, bans, sources)
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check bans licenses sources
 
   build:
-    needs: test
+    needs: [test, deny]
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
