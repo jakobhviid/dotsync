@@ -21,6 +21,7 @@ pub mod config;     // per-machine config (sync dir + home base): load / save / 
 pub mod discovery;  // find candidate cloud dotsync folders across known providers
 pub mod doctor;     // health checks and safe `--fix` repairs → a classified `Report`
 pub mod fsutil;     // filesystem primitives: symlink/tree checks, modes, secret detection
+pub mod journal;    // per-machine undo journal: record destructive runs, revert the last
 pub mod mapping;    // the shared `dotsync.toml`: mappings, groups, load / save
 pub mod overview;   // render the status table (a query result → stdout)
 pub mod plan;       // classify each mapping's `State` on this machine

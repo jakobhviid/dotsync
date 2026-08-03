@@ -118,6 +118,40 @@ one-line warning to stderr suggesting `brew upgrade dotsync`. It **never** promp
 blocks, or auto-upgrades — the warning is safe under `--json` and on a non-TTY. An
 absent or unparseable stamp is silent (lenient read).
 
+## Undo
+
+`dotsync undo` reverts the most recent **destructive** run. It is journaled
+per-machine — the journal never travels, because the bytes an undo restores only
+ever existed on the machine that ran the op (the cross-machine half of an op rides
+the synced `dotsync.toml`).
+
+- **Journal location:** `$DOTSYNC_STATE_DIR` → `$XDG_STATE_HOME/dotsync` →
+  `~/.local/state/dotsync` (state, not config). One `<id>.json` manifest per run;
+  the newest 10 are kept, older ones pruned.
+- **No separate backup store:** dotsync already preserves originals — the cloud
+  copy (`adopt` / `unadopt` / `group remove`) or the `<path>.bak`
+  (`install --adopt`) — so a manifest only records each action's paths and reverses
+  using those.
+- **Scope:** `adopt`, `install --adopt`, `unadopt`, `group remove`. Plain `install`
+  / `uninstall` just toggle a symlink and are reversed by the opposite verb, so they
+  are not journaled.
+- **Reverses, each with a structural guard that *skips* rather than clobbers:**
+  - `adopt` → drop our symlink, move the cloud copy back to `$HOME`, drop the
+    mapping. Guard: the target is still dotsync's symlink and the cloud copy exists.
+    (Removes the file from the cloud, so other machines lose it — the honest inverse
+    of the adopt.)
+  - `install --adopt` → drop the symlink, move the `.bak` back. Guard: still our
+    symlink and the `.bak` is present.
+  - `unadopt` / `group remove` → drop the restored real file, re-symlink the cloud
+    copy, re-add the mapping. Guard: the target is still the unchanged restored copy
+    (`trees_equal` with the cloud copy). **If you edited it since, undo skips it and
+    keeps your version.**
+- **Guardrails:** undo re-adds/drops mappings that propagate to every machine, so
+  it needs confirmation — an interactive prompt on a TTY, or `--yes` under `--json`
+  / non-TTY (otherwise it bails). `--dry-run` previews. Per-item skips/failures do
+  not change the exit status (a skip is reported, not fatal).
+- `dotsync undo --list` shows recent runs (age, command, item count) and exits `0`.
+
 ## Exit codes and output
 
 - **Non-zero is reserved for "the command could not run"** (not configured, bad

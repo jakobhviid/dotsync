@@ -206,6 +206,26 @@ same safe copy-then-swap restore and all-machines `dotsync.toml` removal as
 `group remove`, scoped to one (or several) mappings, with the same
 confirm/`--yes`/`--dry-run` guardrails.
 
+## Undoing
+
+`dotsync undo` reverts the most recent destructive run — `adopt`, `install --adopt`,
+`unadopt`, or `group remove`. It reverses that run's changes on this machine and
+**skips anything you've altered since** (it never clobbers).
+
+```sh
+dotsync undo --list        # recent runs: age, command, item count
+dotsync undo --dry-run     # preview what undo would do, change nothing
+dotsync undo               # revert the last run (asks first)
+dotsync undo --yes         # revert without the prompt
+```
+
+Undoing an `adopt` / `unadopt` re-adds or drops a mapping in `dotsync.toml`, which
+propagates to every machine — so undo asks for confirmation (or `--yes`), and
+refuses under `--json` / non-TTY without `--yes`. The journal is **per-machine**
+(`~/.local/state/dotsync`, override `$DOTSYNC_STATE_DIR`) and keeps the last 10
+runs. Plain `install` / `uninstall` aren't journaled — reverse them with the
+opposite verb.
+
 ## Exit codes
 
 Non-zero is reserved for **"the command could not run"** (not configured, a bad
@@ -229,6 +249,9 @@ exit status** — gate automation on the per-item results, not on `$?`.
   Warn-level advisories (dangling links, drift, conflicted-copy siblings) keep it
   `0`. Use it as the pass/fail gate for automation.
 - `status`, `config`, and `group list` always exit `0`.
+- `undo` exits `0`; per-item skips (something changed since) are reported in the
+  results, not the exit status. It bails non-zero only when it can't run — e.g.
+  `--json` / non-TTY without `--yes`.
 - A `--dry-run` preview never fails on transient states (dangling / conflict show
   as `would-skip`).
 
@@ -250,6 +273,9 @@ Every command accepts `--json`. Shapes:
 - `adopt` — `{ group, merged, results: [ … ] }`.
 - `doctor` — `{ healthy, issues: [ { name, level, message, fixable } ], fixed:
   [ … ] }` (`level` is `warn` or `error`).
+- `undo` — `{ results: [ { name, action, ok, detail } ] }` (a skipped item has
+  `action: "skipped"`, `ok: true`); `undo --list` — `{ runs: [ { id, command,
+  items } ] }`.
 - `group list` — `{ groups: [ { name, members } ] }`; `group rename` — `{ renamed,
   to, members, merged }`; `group move` — `{ moved, group, created }`.
 - On error, any command prints `{ "error": "…" }` and exits non-zero.

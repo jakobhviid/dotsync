@@ -9,6 +9,7 @@ use anyhow::{anyhow, bail, Result};
 
 use crate::config::Config;
 use crate::fsutil;
+use crate::journal::UndoAction;
 use crate::mapping::{Mapping, OnConflict};
 use crate::plan::{state_of, Item, State};
 
@@ -19,6 +20,10 @@ pub struct Outcome {
     pub action: String,
     pub ok: bool,
     pub detail: String,
+    /// How to reverse this action, when it is a reversible destructive op. Consumed
+    /// by the undo journal ([`crate::journal`]); never rendered, so `--json` output
+    /// is unaffected.
+    pub undo: Option<UndoAction>,
 }
 
 impl Outcome {
@@ -28,7 +33,14 @@ impl Outcome {
             action: action.to_string(),
             ok,
             detail: detail.into(),
+            undo: None,
         }
+    }
+
+    /// Attach the action that reverses this outcome (for the undo journal).
+    pub(crate) fn with_undo(mut self, undo: UndoAction) -> Self {
+        self.undo = Some(undo);
+        self
     }
 }
 
@@ -152,7 +164,15 @@ pub fn adopt(
         fsutil::enforce_secret_tree(&source)?;
     }
     fsutil::make_symlink(&source, abs_target)?;
-    Ok((mapping, Outcome::new(&name, "adopted", true, source.display().to_string())))
+    let undo = UndoAction::Adopt {
+        name: name.clone(),
+        target: abs_target.to_path_buf(),
+        source: source.clone(),
+    };
+    Ok((
+        mapping,
+        Outcome::new(&name, "adopted", true, source.display().to_string()).with_undo(undo),
+    ))
 }
 
 /// Make one item linked on this machine, according to its state and conflict
@@ -192,7 +212,7 @@ pub fn link_item(item: &Item, dry_run: bool) -> Outcome {
         }
         State::Available => {
             done!("link", true, "");
-            fsutil::make_symlink(source, &target).map(|_| ("linked", String::new()))
+            fsutil::make_symlink(source, &target).map(|_| ("linked", String::new(), None))
         }
         State::Healable => {
             done!("relink", true, "content matches cloud");
@@ -209,7 +229,7 @@ pub fn link_item(item: &Item, dry_run: bool) -> Outcome {
             }
             fsutil::remove_path(&target)
                 .and_then(|_| fsutil::make_symlink(source, &target))
-                .map(|_| ("relinked", "healed atomic-save clobber".to_string()))
+                .map(|_| ("relinked", "healed atomic-save clobber".to_string(), None))
         }
         State::Diverged => match item.mapping.on_conflict {
             OnConflict::Fail => {
@@ -226,9 +246,17 @@ pub fn link_item(item: &Item, dry_run: bool) -> Outcome {
             OnConflict::Adopt => {
                 done!("adopt", true, "back up local, link cloud");
                 let bak = fsutil::backup_path(&target);
+                // Record the exact backup path now — `backup_path` is stateful and
+                // can't be re-derived after the file is in place (undo needs it).
+                let undo = UndoAction::Backup {
+                    name: name.clone(),
+                    target: target.clone(),
+                    source: source.clone(),
+                    backup: bak.clone(),
+                };
                 fsutil::move_path(&target, &bak)
                     .and_then(|_| fsutil::make_symlink(source, &target))
-                    .map(|_| ("backed-up-linked", format!("local → {}", bak.display())))
+                    .map(|_| ("backed-up-linked", format!("local → {}", bak.display()), Some(undo)))
             }
         },
         State::ForeignSymlink(dest) => match item.mapping.on_conflict {
@@ -246,20 +274,31 @@ pub fn link_item(item: &Item, dry_run: bool) -> Outcome {
             OnConflict::Adopt => {
                 done!("adopt", true, "replace foreign symlink");
                 let bak = fsutil::backup_path(&target);
+                let undo = UndoAction::Backup {
+                    name: name.clone(),
+                    target: target.clone(),
+                    source: source.clone(),
+                    backup: bak.clone(),
+                };
                 fsutil::move_path(&target, &bak)
                     .and_then(|_| fsutil::make_symlink(source, &target))
-                    .map(|_| ("backed-up-linked", format!("old link → {}", bak.display())))
+                    .map(|_| ("backed-up-linked", format!("old link → {}", bak.display()), Some(undo)))
             }
         },
     };
 
     match result {
-        Ok((action, detail)) => {
+        Ok((action, detail, undo)) => {
             // Enforce secret perms on the freshly linked source (recursively).
-            if item.mapping.mode.is_some() && fsutil::enforce_secret_tree(source).is_err() {
-                return Outcome::new(&name, action, true, format!("{detail} (mode not set)"));
+            let outcome = if item.mapping.mode.is_some() && fsutil::enforce_secret_tree(source).is_err() {
+                Outcome::new(&name, action, true, format!("{detail} (mode not set)"))
+            } else {
+                Outcome::new(&name, action, true, detail)
+            };
+            match undo {
+                Some(undo) => outcome.with_undo(undo),
+                None => outcome,
             }
-            Outcome::new(&name, action, true, detail)
         }
         Err(e) => Outcome::new(&name, "error", false, e.to_string()),
     }
@@ -324,7 +363,13 @@ pub fn restore_item(item: &Item, dry_run: bool) -> Outcome {
                 let _ = fsutil::remove_path(&tmp);
                 return Outcome::new(&name, "error", false, e.to_string());
             }
-            Outcome::new(&name, "restored", true, "real copy in $HOME; cloud copy kept")
+            let undo = UndoAction::Restore {
+                name: name.clone(),
+                target: target.clone(),
+                source: item.source.clone(),
+                mapping: item.mapping.clone(),
+            };
+            Outcome::new(&name, "restored", true, "real copy in $HOME; cloud copy kept").with_undo(undo)
         }
         State::DanglingSelf => {
             if dry_run {

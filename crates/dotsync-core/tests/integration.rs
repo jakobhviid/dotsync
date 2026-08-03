@@ -8,7 +8,8 @@ use dotsync_core::apply;
 use dotsync_core::config::Config;
 use dotsync_core::doctor;
 use dotsync_core::fsutil;
-use dotsync_core::mapping::{Mapping, MappingsFile};
+use dotsync_core::journal::{self, UndoAction};
+use dotsync_core::mapping::{current_os, Mapping, MappingsFile, OnConflict};
 use dotsync_core::plan::{state_of, State};
 
 fn sandbox() -> (tempfile::TempDir, Config) {
@@ -637,4 +638,142 @@ fn documented_state_codes_match_the_code() {
         assert!(spec.contains(code), "SPEC.md is missing state code `{code}`");
         assert!(workflows.contains(code), "WORKFLOWS.md is missing state code `{code}`");
     }
+}
+
+// ---- undo journal: happy paths + adversarial guards (never clobber) ----
+
+#[test]
+fn undo_reverts_an_adopt() {
+    let (tmp, cfg) = sandbox();
+    let journal_dir = tmp.path().join("state");
+    let target = cfg.home.join(".config/app.conf");
+    fs::create_dir_all(target.parent().unwrap()).unwrap();
+    fs::write(&target, b"original").unwrap();
+
+    let (mapping, outcome) = apply::adopt(&cfg, &target, None, Some("g".into()), &[], false).unwrap();
+    assert_eq!(outcome.action, "adopted");
+    let mut mappings = MappingsFile::default();
+    mappings.upsert(mapping);
+    mappings.save(&cfg.sync_dir.join(MappingsFile::FILE_NAME)).unwrap();
+    journal::record(&journal_dir, "adopt", vec![outcome.undo.clone().unwrap()]).unwrap();
+
+    let source = cfg.sync_dir.join(".config/app.conf");
+    assert!(fsutil::is_symlink(&target) && source.exists());
+
+    journal::revert(&journal_dir, &cfg, false).unwrap().unwrap();
+
+    assert!(!fsutil::is_symlink(&target), "target should be a real file again");
+    assert_eq!(fs::read(&target).unwrap(), b"original");
+    assert!(!source.exists(), "cloud copy should be moved back out");
+    let after = MappingsFile::load(&cfg.sync_dir.join(MappingsFile::FILE_NAME)).unwrap();
+    assert!(after.find(".config/app.conf").is_none(), "mapping should be dropped");
+    assert!(journal::latest(&journal_dir).is_none(), "run should be consumed");
+}
+
+#[test]
+fn undo_of_adopt_skips_when_target_is_no_longer_our_symlink() {
+    let (tmp, cfg) = sandbox();
+    let journal_dir = tmp.path().join("state");
+    let target = cfg.home.join(".zshrc");
+    fs::write(&target, b"rc").unwrap();
+
+    let (mapping, outcome) = apply::adopt(&cfg, &target, None, Some("g".into()), &[], false).unwrap();
+    let mut mappings = MappingsFile::default();
+    mappings.upsert(mapping);
+    mappings.save(&cfg.sync_dir.join(MappingsFile::FILE_NAME)).unwrap();
+    journal::record(&journal_dir, "adopt", vec![outcome.undo.clone().unwrap()]).unwrap();
+
+    // The user replaced our symlink with an unrelated real file.
+    fsutil::remove_symlink(&target).unwrap();
+    fs::write(&target, b"user replaced it").unwrap();
+
+    let (_, outcomes) = journal::revert(&journal_dir, &cfg, false).unwrap().unwrap();
+    assert_eq!(outcomes[0].action, "skipped");
+    assert_eq!(fs::read(&target).unwrap(), b"user replaced it", "user's file untouched");
+    assert!(cfg.sync_dir.join(".zshrc").exists(), "cloud copy untouched");
+    let after = MappingsFile::load(&cfg.sync_dir.join(MappingsFile::FILE_NAME)).unwrap();
+    assert!(after.find(".zshrc").is_some(), "mapping not dropped when skipped");
+}
+
+#[test]
+fn undo_reverts_install_adopt_backup() {
+    let (tmp, cfg) = sandbox();
+    let journal_dir = tmp.path().join("state");
+    let source = cfg.sync_dir.join(".gitconfig");
+    fs::write(&source, b"cloud").unwrap();
+    let target = cfg.home.join(".gitconfig");
+    fs::write(&target, b"local").unwrap();
+
+    let mut mapping = Mapping::new(".gitconfig");
+    mapping.on_conflict = OnConflict::Adopt;
+    let item = state_of(&mapping, &cfg, current_os());
+    assert!(matches!(item.state, State::Diverged));
+    let outcome = apply::link_item(&item, false);
+    assert_eq!(outcome.action, "backed-up-linked");
+    journal::record(&journal_dir, "install", vec![outcome.undo.clone().unwrap()]).unwrap();
+    assert!(fsutil::is_symlink(&target));
+
+    journal::revert(&journal_dir, &cfg, false).unwrap().unwrap();
+
+    assert!(!fsutil::is_symlink(&target), "symlink dropped");
+    assert_eq!(fs::read(&target).unwrap(), b"local", "backup restored");
+    assert!(source.exists(), "cloud copy kept");
+}
+
+#[test]
+fn undo_of_restore_skips_a_file_changed_since() {
+    let (tmp, cfg) = sandbox();
+    let journal_dir = tmp.path().join("state");
+    let target = cfg.home.join(".config/app.conf");
+    fs::create_dir_all(target.parent().unwrap()).unwrap();
+    fs::write(&target, b"v1").unwrap();
+
+    let (mapping, _) = apply::adopt(&cfg, &target, None, Some("g".into()), &[], false).unwrap();
+    let item = state_of(&mapping, &cfg, current_os()); // Linked
+    let outcome = apply::restore_item(&item, false);
+    assert_eq!(outcome.action, "restored");
+    journal::record(&journal_dir, "unadopt", vec![outcome.undo.clone().unwrap()]).unwrap();
+
+    // The user edits the restored file before undoing.
+    fs::write(&target, b"v2-edited").unwrap();
+
+    let (_, outcomes) = journal::revert(&journal_dir, &cfg, false).unwrap().unwrap();
+    assert_eq!(outcomes[0].action, "skipped");
+    assert!(!fsutil::is_symlink(&target), "not re-linked");
+    assert_eq!(fs::read(&target).unwrap(), b"v2-edited", "the edit is preserved");
+}
+
+#[test]
+fn undo_dry_run_changes_nothing_and_keeps_the_run() {
+    let (tmp, cfg) = sandbox();
+    let journal_dir = tmp.path().join("state");
+    let target = cfg.home.join(".vimrc");
+    fs::write(&target, b"set nocompatible").unwrap();
+    let (mapping, outcome) = apply::adopt(&cfg, &target, None, Some("g".into()), &[], false).unwrap();
+    let mut mappings = MappingsFile::default();
+    mappings.upsert(mapping);
+    mappings.save(&cfg.sync_dir.join(MappingsFile::FILE_NAME)).unwrap();
+    journal::record(&journal_dir, "adopt", vec![outcome.undo.clone().unwrap()]).unwrap();
+
+    journal::revert(&journal_dir, &cfg, true).unwrap().unwrap(); // dry_run
+
+    assert!(fsutil::is_symlink(&target), "dry-run left the symlink in place");
+    assert!(cfg.sync_dir.join(".vimrc").exists());
+    assert!(journal::latest(&journal_dir).is_some(), "dry-run keeps the run");
+}
+
+#[test]
+fn journal_prunes_to_ten_runs() {
+    let (tmp, _cfg) = sandbox();
+    let dir = tmp.path().join("state");
+    for i in 0..12 {
+        let action = UndoAction::Backup {
+            name: format!("m{i}"),
+            target: dir.join("t"),
+            source: dir.join("s"),
+            backup: dir.join("b"),
+        };
+        journal::record(&dir, "install", vec![action]).unwrap();
+    }
+    assert_eq!(journal::list(&dir).len(), 10, "keeps only the newest 10 runs");
 }

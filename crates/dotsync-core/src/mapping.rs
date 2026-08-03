@@ -39,7 +39,7 @@ fn is_default_conflict(c: &OnConflict) -> bool {
 }
 
 /// One synced path.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Mapping {
     /// Path relative to the home base, e.g. `.config/zed`. Also the item's path
     /// inside the sync folder (mirror layout).

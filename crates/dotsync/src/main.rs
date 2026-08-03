@@ -25,7 +25,7 @@ use dotsync_core::apply::{self, Outcome};
 use dotsync_core::config::{self, Config};
 use dotsync_core::mapping::{self, collapse_tilde, current_os, expand_tilde, MappingsFile};
 use dotsync_core::plan::{plan, Item, State};
-use dotsync_core::{discovery, doctor, overview, ui};
+use dotsync_core::{discovery, doctor, journal, overview, ui};
 
 const REPO_URL: &str = "https://github.com/jakobhviid/dotsync";
 
@@ -136,6 +136,24 @@ enum Cmd {
         /// Repair the safe cases (relink clobbers, re-assert secret modes).
         #[arg(long)]
         fix: bool,
+    },
+    /// Revert the most recent destructive run (adopt / install --adopt / unadopt /
+    /// group remove).
+    ///
+    /// Reverses that run's changes on this machine, skipping anything you've
+    /// altered since (it never clobbers). Because it re-adds or drops mappings that
+    /// propagate to every machine, it asks first (or pass --yes). Use --list to see
+    /// recent runs, --dry-run to preview.
+    Undo {
+        /// List recent undoable runs instead of reverting.
+        #[arg(long)]
+        list: bool,
+        /// Show what undo would do without changing anything.
+        #[arg(long)]
+        dry_run: bool,
+        /// Proceed without the interactive confirmation.
+        #[arg(long)]
+        yes: bool,
     },
     /// Print a shell completion script.
     Completions {
@@ -255,6 +273,7 @@ fn run(cli: &Cli) -> Result<ExitCode> {
             yes,
         }) => cmd_unadopt(names, *dry_run, *yes, cli.json),
         Some(Cmd::Doctor { fix }) => cmd_doctor(*fix, cli.json),
+        Some(Cmd::Undo { list, dry_run, yes }) => cmd_undo(*list, *dry_run, *yes, cli.json),
         None => cmd_default(cli.json),
     }
 }
@@ -307,6 +326,7 @@ fn cmd_default(json: bool) -> Result<ExitCode> {
     }
     overview::render(&items, &cfg);
     let outcomes = picker::run(&items, &cfg.home)?;
+    record_undo("install", &outcomes);
     report_outcomes(&outcomes, &cfg.home, false);
     doctor_hint(&cfg, &mappings);
     Ok(ExitCode::SUCCESS)
@@ -612,6 +632,7 @@ fn cmd_adopt(
     if !dry_run {
         mappings.save(&mappings_path)?;
     }
+    record_undo("adopt", &outcomes);
 
     if json {
         let arr: Vec<_> = outcomes.iter().map(outcome_json).collect();
@@ -865,6 +886,7 @@ fn cmd_group_remove(name: &str, dry_run: bool, yes: bool, json: bool) -> Result<
         mappings.mappings.retain(|m| !removed.contains(&m.name));
         mappings.save(&cfg.sync_dir.join(MappingsFile::FILE_NAME))?;
     }
+    record_undo("group remove", &outcomes);
     report_outcomes(&outcomes, &cfg.home, json);
     Ok(ExitCode::SUCCESS)
 }
@@ -918,6 +940,7 @@ fn cmd_install(names: &[String], all: bool, dry_run: bool, adopt: bool, json: bo
     if use_picker {
         overview::render(&items, &cfg);
         let outcomes = picker::run(&items, &cfg.home)?;
+        record_undo("install", &outcomes);
         report_outcomes(&outcomes, &cfg.home, false);
         doctor_hint(&cfg, &mappings);
         return Ok(ExitCode::SUCCESS);
@@ -928,6 +951,7 @@ fn cmd_install(names: &[String], all: bool, dry_run: bool, adopt: bool, json: bo
         bail!("nothing selected — pass mapping names, --all, or run interactively");
     }
     let outcomes: Vec<Outcome> = selected.iter().map(|i| apply::link_item(i, dry_run)).collect();
+    record_undo("install", &outcomes);
     report_outcomes(&outcomes, &cfg.home, json);
     if !json {
         doctor_hint(&cfg, &mappings);
@@ -1000,6 +1024,7 @@ fn cmd_unadopt(names: &[String], dry_run: bool, yes: bool, json: bool) -> Result
         mappings.mappings.retain(|m| !removed.contains(&m.name));
         mappings.save(&cfg.sync_dir.join(MappingsFile::FILE_NAME))?;
     }
+    record_undo("unadopt", &outcomes);
     report_outcomes(&outcomes, &cfg.home, json);
     Ok(ExitCode::SUCCESS)
 }
@@ -1093,6 +1118,129 @@ fn doctor_hint(cfg: &Config, mappings: &MappingsFile) {
             "\n{}",
             ui::paint(ui::To::Err, "2", "Other items need attention — run `dotsync doctor`.")
         );
+    }
+}
+
+/// Record a destructive sweep's reversible actions to the undo journal.
+/// Best-effort: a journaling failure warns but never fails an already-successful
+/// mutation — the op is done; only the ability to `undo` it is lost.
+fn record_undo(command: &str, outcomes: &[Outcome]) {
+    let actions: Vec<_> = outcomes.iter().filter_map(|outcome| outcome.undo.clone()).collect();
+    if actions.is_empty() {
+        return;
+    }
+    let Some(dir) = journal::default_dir() else {
+        return;
+    };
+    if let Err(e) = journal::record(&dir, command, actions) {
+        ui::warn(&format!("could not record undo journal: {e:#}"));
+    }
+}
+
+fn cmd_undo(list: bool, dry_run: bool, yes: bool, json: bool) -> Result<ExitCode> {
+    let Some(dir) = journal::default_dir() else {
+        bail!("cannot locate a state directory (is $HOME set?) — no undo journal");
+    };
+    if list {
+        return cmd_undo_list(&dir, json);
+    }
+
+    let cfg = config::load()?
+        .ok_or_else(|| anyhow!("dotsync is not configured on this machine — nothing to undo"))?;
+
+    let Some(run) = journal::latest(&dir) else {
+        if json {
+            println!("{}", json!({ "reverted": [] }));
+        } else {
+            ui::info("nothing to undo");
+        }
+        return Ok(ExitCode::SUCCESS);
+    };
+
+    // Undo re-adds/drops mappings that propagate to every machine, so confirm like
+    // the other cross-machine-destructive verbs (or bail non-interactively).
+    if !dry_run && !yes {
+        if json || !interactive() {
+            bail!(
+                "undoing `{}` ({} item(s)) reverses changes and may re-add/drop mappings on ALL \
+                 machines — pass --yes to confirm",
+                run.command,
+                run.actions.len()
+            );
+        }
+        let confirmed = Confirm::with_theme(&ColorfulTheme::default())
+            .with_prompt(format!(
+                "Undo the last run (`{}`, {} item(s))? Reverses those changes here and may \
+                 re-add/drop mappings on every machine.",
+                run.command,
+                run.actions.len()
+            ))
+            .default(false)
+            .interact()?;
+        if !confirmed {
+            bail!("aborted");
+        }
+    }
+
+    let Some((run, outcomes)) = journal::revert(&dir, &cfg, dry_run)? else {
+        ui::info("nothing to undo");
+        return Ok(ExitCode::SUCCESS);
+    };
+    if !json {
+        let label = if dry_run { "would undo" } else { "undoing" };
+        ui::info(&format!("{label} `{}`", run.command));
+    }
+    report_outcomes(&outcomes, &cfg.home, json);
+    Ok(ExitCode::SUCCESS)
+}
+
+fn cmd_undo_list(dir: &Path, json: bool) -> Result<ExitCode> {
+    let runs = journal::list(dir);
+    if json {
+        let arr: Vec<_> = runs
+            .iter()
+            .map(|run| {
+                json!({
+                    "id": run.id.to_string(),
+                    "command": run.command,
+                    "items": run.actions.len(),
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&json!({ "runs": arr }))?);
+        return Ok(ExitCode::SUCCESS);
+    }
+    if runs.is_empty() {
+        println!("no undo history");
+        return Ok(ExitCode::SUCCESS);
+    }
+    // `undo --list` is a query: its answer is the payload → stdout.
+    for run in &runs {
+        println!(
+            "  {}  {}  {}",
+            ui::dim(&undo_age(run.id)),
+            ui::bold(&run.command),
+            ui::dim(&format!("{} item{}", run.actions.len(), plural(run.actions.len())))
+        );
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// A coarse "N ago" for a run id (millis since the epoch) — lib-free, for `--list`.
+fn undo_age(id_millis: u128) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis())
+        .unwrap_or(id_millis);
+    let secs = now.saturating_sub(id_millis) / 1000;
+    if secs < 60 {
+        format!("{secs}s ago")
+    } else if secs < 3600 {
+        format!("{}m ago", secs / 60)
+    } else if secs < 86_400 {
+        format!("{}h ago", secs / 3600)
+    } else {
+        format!("{}d ago", secs / 86_400)
     }
 }
 
