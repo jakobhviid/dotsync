@@ -10,12 +10,6 @@ Nothing major is queued — the core is complete (adopt / install / uninstall,
 groups, doctor, undo, version-skew). Near-term work is the cleanups below; larger
 ideas that were weighed and set aside are under "Considered and deferred."
 
-## Known gaps / cleanups
-
-- **Readable-names pass.** Eliminate every single-letter / cryptic binding — locals,
-  loop variables, and closure arguments alike (`r` → `row`, not just closures) — per
-  the house CODE-STYLE ("no single-letter or cryptic names, anywhere").
-
 ## Considered and deferred
 
 - **`dotsync merge` verb.** Once the headline feature, then set aside: now that
