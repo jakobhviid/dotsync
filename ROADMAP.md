@@ -7,8 +7,8 @@ and deferred items. If it isn't here, it isn't planned. (No `TODO.md`, no scatte
 ## Planned
 
 Nothing major is queued — the core is complete (adopt / install / uninstall,
-groups, doctor, undo, version-skew). Near-term work is the cleanups below; larger
-ideas that were weighed and set aside are under "Considered and deferred."
+groups, doctor, undo, version-skew). Ideas that were weighed and set aside are
+under "Considered and deferred."
 
 ## Considered and deferred
 
