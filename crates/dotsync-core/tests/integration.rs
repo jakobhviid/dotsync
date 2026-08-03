@@ -613,3 +613,28 @@ fn mappings_file_round_trips() {
     assert_eq!(loaded.mappings.len(), 2);
     assert_eq!(loaded.find(".ssh/config").unwrap().mode.as_deref(), Some("0600"));
 }
+
+/// Doc-drift guard: every `State::code()` token must appear in SPEC.md and
+/// WORKFLOWS.md, which are compiled into `dotsync --llm`. Rename a state code
+/// without updating the docs and this fails, so the agent guide can't lie.
+#[test]
+fn documented_state_codes_match_the_code() {
+    let spec = include_str!("../../../SPEC.md");
+    let workflows = include_str!("../../../WORKFLOWS.md");
+    let all = [
+        State::Skipped,
+        State::Linked,
+        State::Available,
+        State::LocalOnly,
+        State::Healable,
+        State::Diverged,
+        State::DanglingSelf,
+        State::ForeignSymlink(PathBuf::new()),
+        State::Missing,
+    ];
+    for state in all {
+        let code = state.code();
+        assert!(spec.contains(code), "SPEC.md is missing state code `{code}`");
+        assert!(workflows.contains(code), "WORKFLOWS.md is missing state code `{code}`");
+    }
+}

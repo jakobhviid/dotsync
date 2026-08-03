@@ -1202,8 +1202,14 @@ fn llm_guide() -> String {
     }
     out.push_str("\n\n================================ WORKFLOWS ================================\n\n");
     out.push_str(include_str!("../../../WORKFLOWS.md"));
+    out.push_str("\n\n================================ SPEC ================================\n\n");
+    out.push_str(include_str!("../../../SPEC.md"));
     out.push_str("\n\n================================ README ================================\n\n");
     out.push_str(include_str!("../../../README.md"));
+    out.push_str("\n\n================================ ARCHITECTURE ================================\n\n");
+    out.push_str(include_str!("../../../ARCHITECTURE.md"));
+    out.push_str("\n\n================================ PRINCIPLES ================================\n\n");
+    out.push_str(include_str!("../../../PRINCIPLES.md"));
     out.push_str("\n\n================================ ROADMAP ================================\n\n");
     out.push_str(include_str!("../../../ROADMAP.md"));
     if !out.ends_with('\n') {
