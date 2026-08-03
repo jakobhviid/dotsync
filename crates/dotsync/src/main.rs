@@ -280,7 +280,22 @@ fn ensure_config(json: bool) -> Result<Config> {
 fn load_ctx(json: bool) -> Result<(Config, MappingsFile)> {
     let cfg = ensure_config(json)?;
     let mappings = MappingsFile::load(&cfg.sync_dir.join(MappingsFile::FILE_NAME))?;
+    warn_if_skewed(&mappings);
     Ok((cfg, mappings))
+}
+
+/// Warn (to stderr) when the shared `dotsync.toml` was written by a newer dotsync
+/// than this build — cross-machine version skew. Per the house rules this only
+/// *warns*: it never prompts, blocks, or auto-upgrades, so it's safe under `--json`
+/// (stderr) and on a non-TTY.
+fn warn_if_skewed(mappings: &MappingsFile) {
+    if let Some(newer) = mappings.newer_writer() {
+        ui::warn(&format!(
+            "dotsync.toml was written by a newer dotsync ({newer}); this machine runs {}. \
+             Upgrade with `brew upgrade dotsync` so newer entries are understood.",
+            env!("CARGO_PKG_VERSION")
+        ));
+    }
 }
 
 fn cmd_default(json: bool) -> Result<ExitCode> {
@@ -546,6 +561,7 @@ fn cmd_adopt(
 
     let mappings_path = cfg.sync_dir.join(MappingsFile::FILE_NAME);
     let mut mappings = MappingsFile::load(&mappings_path)?;
+    warn_if_skewed(&mappings);
     let existing: Vec<String> = mappings.mappings.iter().map(|m| m.name.clone()).collect();
 
     // Home-relative names of what we're adopting, for the group suggestion.

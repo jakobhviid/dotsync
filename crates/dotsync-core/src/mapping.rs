@@ -143,9 +143,17 @@ impl Mapping {
     }
 }
 
-/// The `dotsync.toml` document: an array-of-tables under `[[mapping]]`.
+/// The `dotsync.toml` document: an array-of-tables under `[[mapping]]`, preceded
+/// by a `dotsync_version` stamp.
 #[derive(Debug, Default, Deserialize, Serialize)]
 pub struct MappingsFile {
+    /// The dotsync version that last wrote this file. Stamped on every save and
+    /// used to detect cross-machine skew — a file written by a *newer* dotsync
+    /// than the one now reading it. Absent in files written before the stamp
+    /// existed (a lenient read: its absence is never an error). Declared first so
+    /// it serialises as a top-level scalar, ahead of the `[[mapping]]` tables.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dotsync_version: Option<String>,
     #[serde(default, rename = "mapping")]
     pub mappings: Vec<Mapping>,
 }
@@ -161,6 +169,9 @@ const HEADER: &str = "\
 #   target_linux  (optional) Linux-only path override.
 #   mode          (optional) octal mode enforced on the sync copy, e.g. \"0600\".
 #   on_conflict   (optional) \"fail\" (default) or \"adopt\" (sync wins, local .bak).
+#
+# The `dotsync_version` line at the top is stamped automatically on save; it lets
+# another machine warn when this file was written by a newer dotsync than its own.
 
 ";
 
@@ -184,15 +195,28 @@ impl MappingsFile {
         Ok(file)
     }
 
-    /// Serialize back to disk with a documenting header, sorted by name.
+    /// Serialize back to disk with a documenting header, sorted by name, stamping
+    /// the writing tool's version so another machine can detect skew.
     pub fn save(&self, path: &Path) -> Result<()> {
-        let mut sorted = MappingsFile {
-            mappings: self.mappings.clone(),
+        let mut mappings = self.mappings.clone();
+        mappings.sort_by_key(|m| m.name.clone()); // stable order, by mirror path
+        let stamped = MappingsFile {
+            dotsync_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            mappings,
         };
-        sorted.mappings.sort_by_key(|m| m.name.clone()); // stable order, by mirror path
-        let body = toml::to_string_pretty(&sorted).context("serializing mappings")?;
+        let body = toml::to_string_pretty(&stamped).context("serializing mappings")?;
         std::fs::write(path, format!("{HEADER}{body}"))
             .with_context(|| format!("could not write {}", path.display()))
+    }
+
+    /// The stamped writer version when this file was written by a **newer** dotsync
+    /// than the one now running — a cross-machine skew worth surfacing. `None` when
+    /// there is no stamp, it is unparseable, or the running build is as new or
+    /// newer. Best-effort: this only decides whether to *warn*, never gates
+    /// behaviour, so an unreadable stamp simply stays quiet.
+    pub fn newer_writer(&self) -> Option<&str> {
+        let written = self.dotsync_version.as_deref()?;
+        version_gt(written, env!("CARGO_PKG_VERSION")).then_some(written)
     }
 
     pub fn find(&self, name: &str) -> Option<&Mapping> {
@@ -331,5 +355,47 @@ pub fn collapse_tilde(path: &Path, home: &Path) -> String {
         format!("~/{}", rel.to_string_lossy())
     } else {
         path.to_string_lossy().into_owned()
+    }
+}
+
+/// Whether dotted-numeric version `a` is strictly greater than `b`, comparing the
+/// first three components numerically (so `1.10.0 > 1.9.0`, unlike a string sort).
+/// Any unparseable component counts as `0`; this only informs the skew *warning*,
+/// so a version it can't read simply never triggers one.
+fn version_gt(a: &str, b: &str) -> bool {
+    fn parts(version: &str) -> (u64, u64, u64) {
+        let mut components = version.split(['.', '-', '+']).map(|part| part.parse::<u64>().unwrap_or(0));
+        (
+            components.next().unwrap_or(0),
+            components.next().unwrap_or(0),
+            components.next().unwrap_or(0),
+        )
+    }
+    parts(a) > parts(b)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn version_gt_compares_numerically_not_lexically() {
+        assert!(version_gt("2.0.0", "1.9.9"));
+        assert!(version_gt("1.10.0", "1.9.0")); // 10 > 9, not "10" < "9"
+        assert!(!version_gt("1.0.0", "1.0.0"));
+        assert!(!version_gt("1.0.0", "2.0.0"));
+        assert!(!version_gt("garbage", "1.0.0")); // unparseable → 0.0.0, never warns
+        assert!(version_gt("2.1.0-rc1", "2.0.0")); // pre-release suffix ignored
+    }
+
+    #[test]
+    fn newer_writer_flags_only_a_strictly_newer_stamp() {
+        let running = env!("CARGO_PKG_VERSION");
+        let mut file = MappingsFile::default();
+        assert_eq!(file.newer_writer(), None); // no stamp at all
+        file.dotsync_version = Some(running.to_string());
+        assert_eq!(file.newer_writer(), None); // same version as the running build
+        file.dotsync_version = Some("999.0.0".to_string());
+        assert_eq!(file.newer_writer(), Some("999.0.0"));
     }
 }
