@@ -76,3 +76,30 @@ The test for "is the doc done": could a fresh operator or an LLM drive dotsync
 correctly from `dotsync --llm` alone? If a change would make them guess, it isn't.
 Future work, known gaps, and deferred items go in **`ROADMAP.md`** — never a
 `TODO.md` or scattered `// TODO` comments.
+
+### "Documenting the diff" — the doc failure mode, named
+
+Updating a doc is not the same as narrating the update. The reflex is to *edit
+around* the stale sentence so it describes the transition: "this **is** now
+checked", "it **no longer** needs root", "skipped **instead of** re-run". Every
+word can be true and the doc still be wrong, because it describes your commit
+rather than the software.
+
+It costs twice. A reader can't tell a live constraint from a dead one, so the old
+state keeps steering them and they route around a problem that is already gone.
+And it ages into trivia — one release on, "used to do X" is a fact about a version
+nobody runs.
+
+The tells are greppable, so grep **your own diff** before committing: `now`,
+`now that`, `no longer`, `used to`, `actually`, `really`, `instead of <the old
+behaviour>`, emphatic italics (`*is*` checked — arguing with a claim the reader
+never saw), `(fixed in 1.2.3)`, `DONE`.
+
+The fix, in order:
+
+1. **Rewrite as if the new behaviour were the only one that ever existed** — present
+   tense, no memory. Keep the *why* only where it is non-obvious and durable.
+2. **Then ask whether the line still earns its place.** One that only made sense as
+   a contrast with the old state should be *deleted*, not reworded.
+3. **Put the before/after in the commit message** — the artefact built for it, kept
+   by git with a date and a diff.
