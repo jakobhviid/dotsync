@@ -1,0 +1,50 @@
+# dotsync
+
+> dotsync syncs user-level config between macOS and Linux machines through a cloud folder you already use, such as Nextcloud, OneDrive or Dropbox, by symlinking paths from your home folder into it.
+
+Sync your user-level config between machines through a cloud folder, not git, using symlinks. The complete reference, for people and LLMs, is built into the tool: run `dotsync --llm`.
+dotsync is one of the software projects by Jakob Hviid, all listed at https://jakob.hviid.phd/software/ (for LLMs: https://jakob.hviid.phd/llms.txt).
+
+## What it does
+
+- **A mirror of your home folder**: The cloud folder holds a `dotsync/` directory laid out like `$HOME`: `~/.config/zed` lives at `dotsync/.config/zed`. A `dotsync.toml` next to it lists the mappings and syncs with everything else.
+- **Each machine picks its own**: A picker lets you tick what to link on this machine, and the symlinks themselves record what is active, so there is no per-machine state file to drift. Mappings can be scoped to one OS, given a different path per OS, and filed in groups.
+- **Self-healing links**: When an app saves atomically and replaces a symlink with a real file, `install` and `doctor --fix` relink it if the content still matches the cloud copy. `dotsync undo` reverts the most recent destructive run.
+- **Secrets kept out of git**: dotsync never commits anything and refuses a sync folder inside a git repository. Known secrets such as `.ssh`, `.gnupg` and `.aws` get a restrictive mode, re-asserted on `install` and `doctor --fix`.
+
+## Install
+
+Homebrew, on macOS and Linux. Pours a prebuilt binary, so no compiler is needed. The tap is trusted once first, as Homebrew 6 and later ask.
+
+```sh
+brew trust --tap jakobhviid/tap
+brew install jakobhviid/tap/dotsync
+```
+
+Or one line, without Homebrew. No compiler and no root: downloads the prebuilt binary to `~/.local/bin` (set `DOTSYNC_BIN_DIR` to change it).
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/jakobhviid/dotsync/main/install.sh | sh
+```
+
+Then run it. The first run on each machine finds the cloud folder and opens the picker. Run `dotsync setup` only to re-point the folder or reinstall completions.
+
+```sh
+dotsync
+```
+
+## Docs
+
+- [README](https://raw.githubusercontent.com/jakobhviid/dotsync/main/README.md): every command, `dotsync.toml`, groups and secrets
+- [WORKFLOWS.md](https://raw.githubusercontent.com/jakobhviid/dotsync/main/WORKFLOWS.md): task-oriented guide, exit codes and the `--json` output
+- [SPEC.md](https://raw.githubusercontent.com/jakobhviid/dotsync/main/SPEC.md): the behaviour and schema contract
+- [PRINCIPLES.md](https://raw.githubusercontent.com/jakobhviid/dotsync/main/PRINCIPLES.md): the design invariants
+- [ARCHITECTURE.md](https://raw.githubusercontent.com/jakobhviid/dotsync/main/ARCHITECTURE.md): how it is built
+
+## Optional
+
+- [Project page](https://jakob.hviid.phd/dotsync/): the page this file accompanies
+- [Source](https://github.com/jakobhviid/dotsync): MIT licensed
+- [Releases](https://github.com/jakobhviid/dotsync/releases)
+- [All software by Jakob Hviid](https://jakob.hviid.phd/software/)
+- [Jakob Hviid's site, for LLMs](https://jakob.hviid.phd/llms.txt)
