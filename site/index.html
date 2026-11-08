@@ -9,6 +9,7 @@
   <title>dotsync: sync your config between machines through a cloud folder</title>
   <meta name="description" content="dotsync syncs user-level config between macOS and Linux machines through a cloud folder you already use, such as Nextcloud, OneDrive or Dropbox, by symlinking paths from your home folder into it.">
   <link rel="canonical" href="https://jakob.hviid.phd/dotsync/">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -19,7 +20,7 @@
     </nav>
 
     <header class="hero">
-      <h1>dotsync</h1>
+      <div class="hero-title"><img class="hero-icon" src="icon.svg" alt="" width="88" height="88"><h1>dotsync</h1></div>
       <p class="tagline">Sync your user-level config between machines through a cloud folder, not git, using symlinks.</p>
       <pre class="command"><code>brew trust --tap jakobhviid/tap</code><code>brew install jakobhviid/tap/dotsync</code></pre>
       <p class="actions">
