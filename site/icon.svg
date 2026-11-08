@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <!-- dotsync's icon: the dot of dotfiles, with sync arrows. The navy tile is shared by every tool's icon; the canonical copy of
+       each icon is site/icon.svg in its repository (jakobhviid.github.io/_software-template/README.md). -->
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0d3a5f"/><stop offset="1" stop-color="#002642"/></linearGradient>
+
+  </defs>
+  <rect x="2" y="2" width="124" height="124" rx="28" fill="url(#tile)"/>
+  <rect x="2.5" y="2.5" width="123" height="123" rx="27.5" fill="none" stroke="#ffffff" stroke-opacity="0.08"/>
+<path d="M28.3 51.0 A38 38 0 0 1 91.3 37.6" fill="none" stroke="#f3efe4" stroke-width="8" stroke-linecap="round"/><path d="M99.1 28.7 L98.4 47.6 L81.7 38.7 Z" fill="#f3efe4" stroke="#f3efe4" stroke-width="3" stroke-linejoin="round"/><path d="M99.7 77.0 A38 38 0 0 1 36.7 90.4" fill="none" stroke="#f3efe4" stroke-width="8" stroke-linecap="round"/><path d="M28.9 99.3 L29.6 80.4 L46.3 89.3 Z" fill="#f3efe4" stroke="#f3efe4" stroke-width="3" stroke-linejoin="round"/><circle cx="64" cy="64" r="14" fill="#f0a46b"/>
+</svg>

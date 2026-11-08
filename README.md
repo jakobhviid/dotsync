@@ -1,3 +1,5 @@
+<img src="site/icon.svg" alt="" width="96" align="right">
+
 # dotsync
 
 Sync your user-level config between machines through a **cloud folder** — not git.
