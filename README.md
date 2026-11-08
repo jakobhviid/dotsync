@@ -14,6 +14,7 @@ propagate the way a synced folder already does. If you run Nextcloud/OneDrive
 anyway, dotsync turns it into a dotfile sync with zero extra services.
 
 ```sh
+brew trust --tap jakobhviid/tap   # once: Homebrew 6 and later load a third-party tap only when trusted
 brew install jakobhviid/tap/dotsync
 # or:
 curl -fsSL https://raw.githubusercontent.com/jakobhviid/dotsync/main/install.sh | sh
