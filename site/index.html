@@ -1,0 +1,150 @@
+<!doctype html>
+<!-- dotsync's project page, at jakob.hviid.phd/dotsync, published from site/ by .github/workflows/pages.yml. The layout and
+     style.css are shared by every command-line tool's page; the canonical copy is in
+     jakobhviid.github.io/_software-template/. Only the words and examples here are dotsync's own. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>dotsync: sync your config between machines through a cloud folder</title>
+  <meta name="description" content="dotsync syncs user-level config between macOS and Linux machines through a cloud folder you already use, such as Nextcloud, OneDrive or Dropbox, by symlinking paths from your home folder into it.">
+  <link rel="canonical" href="https://jakob.hviid.phd/dotsync/">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="wrap">
+    <nav class="bar">
+      <span class="crumbs"><a href="https://jakob.hviid.phd/">Jakob Hviid</a><span class="sep">/</span><a href="https://jakob.hviid.phd/software/">Software</a><span class="sep">/</span><strong>dotsync</strong></span>
+      <span class="links"><a href="#install">Install</a><a href="https://github.com/jakobhviid/dotsync">GitHub</a></span>
+    </nav>
+
+    <header class="hero">
+      <h1>dotsync</h1>
+      <p class="tagline">Sync your user-level config between machines through a cloud folder, not git, using symlinks.</p>
+      <pre class="command"><code>brew trust --tap jakobhviid/tap</code><code>brew install jakobhviid/tap/dotsync</code></pre>
+      <p class="actions">
+        <a class="button" href="#install">Install</a>
+        <a class="button ghost" href="https://github.com/jakobhviid/dotsync#readme">Read the README</a>
+      </p>
+      <p class="platforms">macOS and Linux, x86_64 and arm64 · MIT licensed</p>
+    </header>
+
+    <main>
+      <section id="what">
+        <h2>What it does</h2>
+        <p class="section-lead">dotsync symlinks paths from your <code>$HOME</code> into a folder inside Nextcloud,
+          OneDrive, Dropbox, Proton Drive or iCloud. The cloud provider already syncs that folder across your machines,
+          so a config change propagates with no commit, pull or merge. dotsync only wires the symlinks.</p>
+        <div class="features">
+          <div class="feature">
+            <h3>A mirror of your home folder</h3>
+            <p>The cloud folder holds a <code>dotsync/</code> directory laid out like <code>$HOME</code>:
+              <code>~/.config/zed</code> lives at <code>dotsync/.config/zed</code>. A <code>dotsync.toml</code> next to
+              it lists the mappings and syncs with everything else.</p>
+          </div>
+          <div class="feature">
+            <h3>Each machine picks its own</h3>
+            <p>A picker lets you tick what to link on this machine, and the symlinks themselves record what is active,
+              so there is no per-machine state file to drift. Mappings can be scoped to one OS, given a different path
+              per OS, and filed in groups.</p>
+          </div>
+          <div class="feature">
+            <h3>Self-healing links</h3>
+            <p>When an app saves atomically and replaces a symlink with a real file, <code>install</code> and
+              <code>doctor --fix</code> relink it if the content still matches the cloud copy. <code>dotsync undo</code>
+              reverts the most recent destructive run.</p>
+          </div>
+          <div class="feature">
+            <h3>Secrets kept out of git</h3>
+            <p>dotsync never commits anything and refuses a sync folder inside a git repository. Known secrets such as
+              <code>.ssh</code>, <code>.gnupg</code> and <code>.aws</code> get a restrictive mode, re-asserted on
+              <code>install</code> and <code>doctor --fix</code>.</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="look">
+        <h2>A first look</h2>
+        <p class="section-lead">There is no mandatory setup step. The first run finds your cloud folder, lets you pick
+          it, installs shell completions and continues. On a second machine the same first run finds the shared folder
+          and lets you tick the items you want there.</p>
+<pre><code><span class="dim"># first run: folder, then picker</span>
+<span class="dim">$</span> dotsync
+
+<span class="dim"># move into the cloud, link it back</span>
+<span class="dim">$</span> dotsync adopt ~/.config/zed
+
+<span class="dim"># every mapping and its state here</span>
+<span class="dim">$</span> dotsync status
+
+<span class="dim"># health check (--fix to repair)</span>
+<span class="dim">$</span> dotsync doctor</code></pre>
+      </section>
+
+      <section id="install">
+        <h2>Install</h2>
+        <div class="install-step">
+          <h3>Homebrew, on macOS and Linux</h3>
+          <p>Pours a prebuilt binary, so no compiler is needed. The tap is trusted once first, as Homebrew 6 and later ask.</p>
+          <pre class="command"><code>brew trust --tap jakobhviid/tap</code><code>brew install jakobhviid/tap/dotsync</code></pre>
+        </div>
+        <div class="install-step">
+          <h3>Or one line, without Homebrew</h3>
+          <p>No compiler and no root: downloads the prebuilt binary to <code>~/.local/bin</code> (set
+            <code>DOTSYNC_BIN_DIR</code> to change it).</p>
+          <pre class="command"><code>curl -fsSL https://raw.githubusercontent.com/jakobhviid/dotsync/main/install.sh | sh</code></pre>
+        </div>
+        <div class="install-step">
+          <h3>Then run it</h3>
+          <p>The first run on each machine finds the cloud folder and opens the picker. Run <code>dotsync setup</code>
+            only to re-point the folder or reinstall completions.</p>
+          <pre class="command"><code>dotsync</code></pre>
+        </div>
+      </section>
+
+      <section id="docs">
+        <h2>Documentation</h2>
+        <ul class="docs">
+          <li><a href="https://github.com/jakobhviid/dotsync#readme">README</a>: every command,
+            <code>dotsync.toml</code>, groups and secrets</li>
+          <li><a href="https://github.com/jakobhviid/dotsync/blob/main/WORKFLOWS.md">WORKFLOWS.md</a>: task-oriented
+            guide, exit codes and the <code>--json</code> output</li>
+          <li><a href="https://github.com/jakobhviid/dotsync/blob/main/SPEC.md">SPEC.md</a>: the behaviour and schema
+            contract</li>
+          <li><a href="https://github.com/jakobhviid/dotsync/blob/main/PRINCIPLES.md">PRINCIPLES.md</a>: the design
+            invariants</li>
+          <li><a href="https://github.com/jakobhviid/dotsync/blob/main/ARCHITECTURE.md">ARCHITECTURE.md</a>: how it is
+            built</li>
+          <li><a href="https://github.com/jakobhviid/dotsync/releases">Releases</a></li>
+        </ul>
+      </section>
+    </main>
+
+    <footer>
+      <p>dotsync is open source under the MIT licence.</p>
+      <p><strong>AI disclosure.</strong> Parts of this project were written with the assistance of AI coding agents.
+        All changes are reviewed by the maintainer.</p>
+      <p>One of the <a href="https://jakob.hviid.phd/software/">software projects</a> by
+        <a href="https://jakob.hviid.phd/">Jakob Hviid</a>. All of them install from the
+        <a href="https://github.com/jakobhviid/homebrew-tap">jakobhviid/tap</a> Homebrew tap.</p>
+    </footer>
+  </div>
+
+  <script>
+    // A copy button on every command block; a block of several commands copies them all, one per line.
+    for (const block of document.querySelectorAll("pre.command")) {
+      const button = document.createElement("button");
+      button.className = "copy";
+      button.type = "button";
+      button.textContent = "Copy";
+      button.addEventListener("click", async () => {
+        const lines = [...block.querySelectorAll("code")].map((code) => code.textContent.trim());
+        await navigator.clipboard.writeText(lines.join("\n"));
+        button.textContent = "Copied";
+        setTimeout(() => (button.textContent = "Copy"), 1500);
+      });
+      block.appendChild(button);
+    }
+  </script>
+</body>
+</html>
